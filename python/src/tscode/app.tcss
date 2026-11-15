@@ -1,0 +1,361 @@
+/* All colours come from the active VSTheme (theme.py): "editor.background" -> $vs-editor-background.
+   No colour literals in this file. */
+
+* {
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 1;
+    scrollbar-background: $vs-editor-background;
+    scrollbar-background-hover: $vs-editor-background;
+    scrollbar-background-active: $vs-editor-background;
+    scrollbar-color: $vs-scrollbarSlider-background;
+    scrollbar-color-hover: $vs-scrollbarSlider-hoverBackground;
+    scrollbar-color-active: $vs-scrollbarSlider-hoverBackground;
+    scrollbar-corner-color: $vs-editor-background;
+}
+
+Screen {
+    layout: vertical;
+    background: $vs-editor-background;
+    color: $vs-foreground;
+}
+
+.spacer { width: 1fr; height: 1; }
+.claude-mark { width: auto; color: $vs-claude-accent; }
+
+/* ---- title bar ---- */
+#titlebar {
+    height: 1;
+    background: $vs-titleBar-activeBackground;
+    color: $vs-titleBar-activeForeground;
+    overflow: hidden;
+}
+#logo { width: auto; padding: 0 1; color: $vs-logo-foreground; }
+.menu-button { width: auto; padding: 0 1; }
+.menu-button:hover, .menu-button.-open { background: $vs-list-activeSelectionBackground; }
+#nav-arrows { width: auto; color: $vs-disabledForeground; }
+.pill-cap { width: auto; color: $vs-input-background; }
+#command-center {
+    width: 2fr;
+    max-width: 42;
+    text-align: center;
+    background: $vs-input-background;
+    color: $vs-commandCenter-foreground;
+}
+#command-center:hover { color: $vs-foreground; }
+.title-button { width: auto; padding: 0 1; }
+.title-button:hover { background: $vs-list-activeSelectionBackground; }
+#win-close:hover { background: $vs-windowClose-hoverBackground; color: $vs-button-foreground; }
+
+/* ---- popups: menus, dialogs, quick pick ----
+   .popup-box is a solid backdrop; the rounded border is drawn on a child inside it. */
+MenuScreen { background: transparent; align: left top; }
+.popup-box { height: auto; background: $vs-menu-background; }
+#menu, #menu:focus {
+    height: 1fr;
+    padding: 0;
+    background: $vs-menu-background;
+    color: $vs-menu-foreground;
+    border: round $vs-menu-border;
+}
+#menu > .option-list--option-highlighted {
+    background: $vs-menu-selectionBackground;
+    color: $vs-menu-selectionForeground;
+    text-style: none;
+}
+#menu > .option-list--option-hover { background: $vs-list-hoverBackground; }
+#menu > .option-list--separator { color: $vs-border; }
+
+ChoiceModal { align: center middle; background: $vs-editor-background 55%; }
+.dialog-box { width: 68; max-width: 90%; }
+.dialog { height: auto; padding: 1 3; border: round $vs-menu-border; }
+.dialog-title { width: 1fr; text-style: bold; color: $vs-foreground; }
+.dialog-detail { width: 1fr; color: $vs-descriptionForeground; margin: 1 0 0 0; }
+.dialog-buttons { height: auto; align-horizontal: right; margin: 2 0 0 0; }
+.dialog Button, .dialog Button:hover {
+    height: 1;
+    min-width: 14;
+    margin: 0 0 0 2;
+    border: none;
+    background: $vs-button-secondaryBackground;
+    color: $vs-foreground;
+    text-style: none;
+}
+.dialog Button:hover { background: $vs-button-secondaryHoverBackground; }
+.dialog Button:focus { text-style: underline; }
+.dialog Button.default-button, .dialog Button.default-button:hover {
+    background: $vs-button-background;
+    color: $vs-button-foreground;
+}
+
+InputModal, QuickPick { align: center top; background: transparent; }
+.quick-box { width: 72; max-width: 90%; margin: 1 0 0 0; }
+.quick-input { height: auto; padding: 0 1; border: round $vs-menu-border; }
+.quick-hint { width: 1fr; color: $vs-descriptionForeground; }
+#quick-list, #quick-list:focus {
+    height: auto;
+    max-height: 16;
+    padding: 0;
+    margin: 1 0 0 0;
+    border: none;
+    background: $vs-menu-background;
+}
+#quick-list > .option-list--option-highlighted {
+    background: $vs-list-activeSelectionBackground;
+    color: $vs-list-activeSelectionForeground;
+    text-style: none;
+}
+#quick-list > .option-list--option-hover { background: $vs-list-hoverBackground; }
+
+Input, Input:focus {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: $vs-input-background;
+    color: $vs-foreground;
+}
+Input > .input--placeholder { color: $vs-disabledForeground; }
+
+/* ---- command palette / quick open (Textual's widget, dressed as VS Code's) ---- */
+CommandPalette { background: transparent; }
+CommandPalette > Vertical {
+    width: 72;
+    max-width: 90%;
+    margin-top: 1;
+    background: $vs-menu-background;
+}
+CommandPalette #--input, CommandPalette #--input.--list-visible {
+    height: 3;
+    border: round $vs-menu-border;
+    border-bottom: round $vs-menu-border;
+    background: $vs-menu-background;
+}
+CommandPalette SearchIcon { display: none; }
+CommandPalette CommandInput, CommandPalette CommandInput:focus {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    background: $vs-menu-background;
+}
+CommandPalette #--results { background: $vs-menu-background; }
+CommandPalette CommandList, CommandPalette CommandList:focus {
+    border: none;
+    border-bottom: none;
+    padding: 0 1 1 1;
+    max-height: 16;
+    background: $vs-menu-background;
+}
+CommandPalette CommandList > .option-list--option { padding: 0 1; text-style: none; color: $vs-menu-foreground; }
+CommandPalette CommandList > .option-list--option-highlighted {
+    background: $vs-list-activeSelectionBackground;
+    color: $vs-list-activeSelectionForeground;
+    text-style: none;
+}
+CommandPalette > .command-palette--highlight { text-style: bold; color: $vs-list-highlightForeground; }
+CommandPalette LoadingIndicator { border-bottom: none; background: $vs-menu-background; }
+
+/* ---- body ---- */
+#body { height: 1fr; }
+
+#activitybar {
+    width: 5;
+    background: $vs-activityBar-background;
+    border-right: solid $vs-border;
+}
+#activitybar .spacer { height: 1fr; width: 1; }
+.activity-item {
+    width: 4;
+    height: 3;
+    content-align: center middle;
+    color: $vs-activityBar-inactiveForeground;
+    border-left: wide $vs-activityBar-background;
+}
+.activity-item:hover { color: $vs-activityBar-foreground; }
+.activity-item.-active {
+    color: $vs-activityBar-foreground;
+    border-left: wide $vs-activityBar-activeBorder;
+}
+#activity-claude, #activity-claude.-active { color: $vs-claude-accent; }
+
+/* ---- side bars ---- */
+#sidebar {
+    width: 32;
+    background: $vs-sideBar-background;
+    color: $vs-sideBar-foreground;
+}
+#sidebar-views, #sidebar-views > Vertical { height: 1fr; }
+.sidebar-header { height: 2; padding: 0 1 0 0; }
+.sidebar-title { width: 1fr; height: 2; padding: 0 2; color: $vs-sideBarTitle-foreground; }
+.section-header { height: 1; background: $vs-sideBarSectionHeader-background; }
+.section-title {
+    width: 1fr;
+    padding: 0 1;
+    text-style: bold;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+.header-button { width: auto; padding: 0 1; color: $vs-descriptionForeground; }
+.header-button:hover { color: $vs-foreground; background: $vs-list-activeSelectionBackground; }
+.sidebar-note { padding: 0 2 1 2; color: $vs-descriptionForeground; height: auto; }
+
+.sidebar-tree {
+    height: 1fr;
+    overflow-x: hidden;
+    padding: 0 0 0 1;
+    background: $vs-sideBar-background;
+    scrollbar-background: $vs-sideBar-background;
+    scrollbar-background-hover: $vs-sideBar-background;
+    scrollbar-background-active: $vs-sideBar-background;
+    scrollbar-corner-color: $vs-sideBar-background;
+}
+.sidebar-tree > .tree--cursor {
+    background: $vs-list-inactiveSelectionBackground;
+    color: $vs-sideBar-foreground;
+    text-style: none;
+}
+.sidebar-tree:focus > .tree--cursor {
+    background: $vs-list-activeSelectionBackground;
+    color: $vs-list-activeSelectionForeground;
+    text-style: none;
+}
+.sidebar-tree > .tree--highlight-line { background: $vs-list-hoverBackground; }
+.sidebar-tree > .tree--highlight { text-style: none; }
+
+#sidebar Input { margin: 0 2 1 2; }
+#sidebar OptionList, #sidebar OptionList:focus {
+    height: 1fr;
+    padding: 0 0 0 1;
+    border: none;
+    background: $vs-sideBar-background;
+    scrollbar-background: $vs-sideBar-background;
+}
+#sidebar OptionList > .option-list--option-highlighted {
+    background: $vs-list-inactiveSelectionBackground;
+    color: $vs-sideBar-foreground;
+    text-style: none;
+}
+#sidebar OptionList:focus > .option-list--option-highlighted {
+    background: $vs-list-activeSelectionBackground;
+    color: $vs-list-activeSelectionForeground;
+}
+#sidebar OptionList > .option-list--option-hover { background: $vs-list-hoverBackground; }
+
+/* ---- splitters ---- */
+.splitter { color: $vs-border; }
+.splitter:hover { color: $vs-focusBorder; }
+.splitter.-v { width: 1; height: 1fr; background: $vs-sideBar-background; }
+.splitter.-h { width: 1fr; height: 1; background: $vs-panel-background; }
+
+/* ---- editor ---- */
+#center { width: 1fr; }
+#editor-area { height: 1fr; background: $vs-editor-background; }
+#tabbar { height: 2; background: $vs-editorGroupHeader-tabsBackground; }
+#breadcrumbs {
+    height: 1;
+    padding: 0 2;
+    color: $vs-breadcrumb-foreground;
+    background: $vs-editor-background;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+#editor-area.-empty #tabbar, #editor-area.-empty #breadcrumbs { display: none; }
+#editors { height: 1fr; }
+CodeEditor, CodeEditor:focus {
+    border: none;
+    padding: 0 0 0 1;
+    background: $vs-editor-background;
+}
+#welcome {
+    width: 1fr;
+    height: 1fr;
+    content-align: center middle;
+    color: $vs-disabledForeground;
+}
+.not-editable { width: 1fr; height: 1fr; padding: 2 4; color: $vs-descriptionForeground; }
+
+/* ---- bottom panel ---- */
+#panel { height: 14; background: $vs-panel-background; }
+.panel-header { height: 2; padding: 0 0 0 2; }
+/* "wide" bottom border = a thin line hugging the label: VS Code's active-tab underline */
+.panel-tab {
+    width: auto;
+    height: 2;
+    margin: 0 2 0 0;
+    color: $vs-panelTitle-inactiveForeground;
+    border-bottom: wide $vs-panel-background;
+}
+.panel-tab:hover { color: $vs-panelTitle-activeForeground; }
+.panel-tab.-active {
+    color: $vs-panelTitle-activeForeground;
+    border-bottom: wide $vs-panelTitle-activeBorder;
+}
+.panel-actions { dock: right; width: auto; height: 1; background: $vs-panel-background; }
+.panel-shell { width: auto; padding: 0 1; color: $vs-descriptionForeground; }
+#panel-views { height: 1fr; padding: 0 0 0 2; }
+.panel-note { padding: 0; color: $vs-descriptionForeground; }
+Terminal { width: 1fr; height: 1fr; background: $vs-terminal-background; }
+
+/* ---- Claude Code panel ---- */
+#claude-panel {
+    width: 64;
+    background: $vs-sideBar-background;
+    color: $vs-sideBar-foreground;
+}
+#claude-panel .claude-mark { padding: 0 0 0 2; }
+#claude-panel .sidebar-title { padding: 0 1; }
+#claude-panel Terminal { margin: 0 0 0 1; background: $vs-sideBar-background; }
+
+/* ---- status bar ---- */
+#statusbar {
+    height: 1;
+    background: $vs-statusBar-background;
+    color: $vs-statusBar-foreground;
+    overflow: hidden;
+}
+#status-remote {
+    width: auto;
+    background: $vs-statusBarItem-remoteBackground;
+    color: $vs-statusBarItem-remoteForeground;
+}
+.status-item { width: auto; padding: 0 1; }
+.status-item:hover { background: $vs-statusBarItem-hoverBackground; }
+#status-claude-mark { padding: 0 0 0 1; }
+#status-claude { padding: 0 1 0 1; }
+
+/* ---- Spotify player (bottom of the right-hand column) ---- */
+.filler { height: 1fr; }
+#spotify {
+    height: auto;
+    padding: 0 1 0 2;
+    background: $vs-sideBar-background;
+    border-top: solid $vs-border;
+}
+.spotify-header { height: 1; }
+.spotify-mark { width: auto; color: $vs-spotify-accent; }
+.spotify-title { width: 1fr; padding: 0 1; color: $vs-sideBarTitle-foreground; }
+#spotify-device {
+    width: auto;
+    max-width: 24;
+    padding: 0 1;
+    color: $vs-descriptionForeground;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+#spotify-views, #spotify-login, #spotify-player { height: auto; }
+#spotify-note { height: 1; margin: 1 0 0 0; color: $vs-descriptionForeground; text-wrap: nowrap; text-overflow: ellipsis; }
+#spotify-login-button {
+    width: auto;
+    margin: 1 0 1 0;
+    padding: 0 2;
+    background: $vs-spotify-accent;
+    color: $vs-editor-background;
+    text-style: bold;
+}
+#spotify-track { height: 1; margin: 1 0 0 0; text-wrap: nowrap; text-overflow: ellipsis; }
+#spotify-progress { height: 1; }
+.spotify-controls { height: 1; margin: 1 0 1 0; align-horizontal: center; }
+.media-button { width: auto; padding: 0 2; color: $vs-foreground; }
+.media-button:hover { background: $vs-list-activeSelectionBackground; }
+.media-button.-on { color: $vs-spotify-accent; }
+#spotify-toggle { color: $vs-spotify-accent; }
+#spotify-volume { width: 5; text-align: center; color: $vs-descriptionForeground; }
+#spotify-client-id { margin: 1 0 0 0; }

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Launch Terminal Studio Code. Usage: ./tscode [folder-or-file]
+# Works from anywhere (and through a symlink): the app always runs from this repo's environment.
+DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+exec uv run --quiet --project "$DIR" tscode "$@"
