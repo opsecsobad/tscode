@@ -1,2 +1,4 @@
 # tscode
-visual studio code in the terminal
+Visual Studio Code in the terminal
+
+currently only in python versiony
