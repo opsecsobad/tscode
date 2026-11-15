@@ -23,4 +23,11 @@ once built launch it with
 
 in the folder youre working on
 
-this readme was written with tscode
+
+# this readme was written with tscode btw
+
+and some other info
+it only works with linux atm
+made with claude fable 5.2
+made in omarchy linux
+if you want it compatibile with windows or with mac tell claude to make it
