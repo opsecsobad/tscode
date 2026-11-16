@@ -101,39 +101,71 @@ class Panel(Vertical):
                 budget -= cost
 
 
-def claude_command() -> list[str] | None:
-    """The command for the Claude panel. Override with TSCODE_CLAUDE_CMD."""
+# Coding agents the right-hand panel can run: (name, command). Only installed ones are offered.
+AGENTS = [
+    ("Claude Code", "claude"),
+    ("Codex", "codex"),
+    ("Grok", "grok"),
+    ("Antigravity", "agy"),
+    ("Gemini", "gemini"),
+    ("OpenCode", "opencode"),
+    ("Cursor Agent", "cursor-agent"),
+]
+
+
+def agent_command(index: int) -> list[str] | None:
+    """The command line for an agent, if it is installed. TSCODE_CLAUDE_CMD overrides Claude's."""
     override = os.environ.get("TSCODE_CLAUDE_CMD")
-    if override:
+    if index == 0 and override:
         return shlex.split(override)
-    return ["claude"] if shutil.which("claude") else None
+    command = AGENTS[index][1]
+    return [command] if shutil.which(command) else None
 
 
 class ClaudePanel(Vertical):
-    """Secondary side bar: the real Claude Code CLI in an embedded terminal, with the
-    Spotify player docked in its bottom corner."""
+    """Secondary side bar: a coding agent's real CLI (Claude Code, Codex, ...) in an embedded
+    terminal, with the Spotify player docked in its bottom corner. Nothing runs until an
+    agent is picked from the Agents menu."""
 
     def __init__(self, workspace: Path, theme: VSTheme) -> None:
         super().__init__(id="claude-panel")
         self.workspace = workspace
         self.vs_theme = theme
+        self.agent: int | None = None  # index into AGENTS of the running agent
+
+    async def start(self, index: int) -> None:
+        """Run agent `index` here, replacing whichever one is running."""
+        command = agent_command(index)
+        if command is None:
+            return
+        await self.stop()
+        self.agent = index
+        self.query_one("#agent-title", Static).update(AGENTS[index][0].upper())
+        for placeholder in self.query(".agent-empty"):
+            placeholder.display = False
+        terminal = Terminal(command, self.workspace, theme=self.app.vs_theme, id="claude-terminal")
+        await self.mount(terminal, after=self.query_one(".sidebar-header"))
+
+    async def stop(self) -> None:
+        for terminal in self.query("#claude-terminal"):
+            await terminal.remove()  # unmounting kills the process
+        self.agent = None
+        self.query_one("#agent-title", Static).update("AGENT")
+        for placeholder in self.query(".agent-empty"):
+            placeholder.display = True
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="sidebar-header"):
             yield Static(icon("claude"), classes="claude-mark")
-            yield Static("CLAUDE CODE", classes="sidebar-title")
-            yield ActionButton(icon("add"), "restart_claude", "New Conversation (restarts Claude Code)", classes="header-button")
-            yield ActionButton(icon("close"), "toggle_claude", "Hide Claude Code (Ctrl+Alt+B)", classes="header-button")
-        command = claude_command()
-        if command:
-            yield Terminal(command, self.workspace, theme=self.vs_theme, id="claude-terminal")
-        else:
-            yield Static(
-                "Claude Code isn't installed, so this panel has nothing to run.\n\n"
-                "Install it from https://claude.com/claude-code, then restart tscode.",
-                classes="sidebar-note",
-            )
-            yield Static(classes="filler")
+            yield Static("AGENT", classes="sidebar-title", id="agent-title")
+            yield ActionButton(icon("add"), "restart_claude", "New Conversation (restarts the agent)", classes="header-button")
+            yield ActionButton(icon("close"), "toggle_claude", "Hide Agent Panel (Ctrl+Alt+B)", classes="header-button")
+        yield Static(
+            "No agent is running.\n\n"
+            "Pick one (Claude Code, Codex, Grok, Antigravity...) from the Agents menu in the top-right corner.",
+            classes="sidebar-note agent-empty",
+        )
+        yield Static(classes="filler agent-empty")
         if self.app.spotify_enabled:
             yield SpotifyPlayer()
 

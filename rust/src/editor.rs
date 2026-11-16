@@ -10,6 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
 
+/// Columns the editor's scroll bar takes on the right.
+pub const SCROLLBAR_W: i32 = 2;
+
 pub const MAX_FILE_BYTES: u64 = 5_000_000;
 const TAB: i32 = 4;
 
@@ -856,6 +859,18 @@ impl Doc {
         self.top = (self.top as i32 + delta).clamp(0, limit.max(0)) as usize;
     }
 
+    /// Jump so the scrollbar thumb sits under screen row `y` (click or drag on the scrollbar).
+    pub fn scrollbar_to(&mut self, y: i32) {
+        let h = self.area.h.max(1);
+        let line = (y - self.area.y).clamp(0, h - 1) as i64 * self.lines.len() as i64 / h as i64;
+        self.scroll(line as i32 - h / 2 - self.top as i32);
+    }
+
+    /// True when (x, y) is over the text itself, not the line numbers or the scrollbar.
+    pub fn over_text(&self, x: i32, y: i32) -> bool {
+        self.area.contains(x, y) && x >= self.text_x && x < self.area.right() - SCROLLBAR_W
+    }
+
     pub fn scroll_sideways(&mut self, delta: i32) {
         if !self.soft_wrap {
             self.left = (self.left + delta).max(0);
@@ -921,7 +936,7 @@ impl Doc {
         let digits = self.lines.len().to_string().len() as i32;
         self.area = area;
         self.text_x = area.x + 1 + digits + 2;
-        self.text_w = (area.right() - 1 - self.text_x).max(1);
+        self.text_w = (area.right() - SCROLLBAR_W - self.text_x).max(1);
         if self.follow {
             self.follow = false;
             if std::mem::take(&mut self.centre) {
@@ -1041,10 +1056,26 @@ impl Doc {
         // Scroll bar.
         let total = self.lines.len() as i32;
         if total > area.h && area.h > 0 {
-            let size = (area.h * area.h / total).max(1);
-            let offset = (self.top as i32 * (area.h - size) / (total - area.h).max(1)).min(area.h - size);
-            for y in 0..size {
-                buf.put(area.right() - 1, area.y + offset + y, '▐', Style::new(theme.c("scrollbarSlider.background"), bg));
+            // Measured in eighths of a cell so the thumb glides instead of jumping a row at a time.
+            const LOWER: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            let slider = theme.c("scrollbarSlider.background");
+            let track = area.h * 8;
+            let size = (track as i64 * area.h as i64 / total as i64).max(8) as i32;
+            let offset = (self.top as i64 * (track - size) as i64 / (total - area.h).max(1) as i64).min((track - size) as i64) as i32;
+            for y in offset / 8..=(offset + size - 1) / 8 {
+                let (cell_top, cell_end) = (y * 8, y * 8 + 8);
+                // A thumb edge inside the cell: part-height blocks only grow from the bottom, so the
+                // lower edge is drawn as the gap below it with the colours swapped.
+                let (ch, style) = if offset > cell_top {
+                    (LOWER[(cell_end - offset).clamp(0, 8) as usize], Style::new(slider, bg))
+                } else if offset + size < cell_end {
+                    (LOWER[(cell_end - offset - size).clamp(0, 8) as usize], Style::new(bg, slider))
+                } else {
+                    ('█', Style::new(slider, bg))
+                };
+                for x in area.right() - SCROLLBAR_W..area.right() {
+                    buf.put(x, area.y + y, ch, style);
+                }
             }
         }
         if !focused {

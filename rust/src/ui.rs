@@ -2,7 +2,7 @@
 //!
 //! All colours come from the active `VSTheme`; none are written here as literals.
 
-use crate::app::{Action, App, Focus, Hit, Severity, View, MENUS, PANEL_TABS};
+use crate::app::{Action, App, Focus, Hit, Severity, View, AGENTS, MENUS, PANEL_TABS};
 use crate::icons::{file_icon, icon};
 use crate::popups::{wrap_text, Modal};
 use crate::screen::{ellipsize, width, Buffer, Rect, Rgb, Style, BOLD};
@@ -15,7 +15,7 @@ const ACTIVITY: &[(&str, &str, &str)] = &[
     ("scm", "scm", "Source Control"),
     ("debug", "debug", "Run and Debug"),
     ("extensions", "extensions", "Extensions"),
-    ("claude", "claude", "Claude Code (Ctrl+Alt+B)"),
+    ("claude", "claude", "Agent Panel (Ctrl+Alt+B)"),
 ];
 
 const WELCOME: &[(&str, &str)] = &[
@@ -179,12 +179,17 @@ impl App {
         let buttons: [(&str, Action, &'static str); 4] = [
             ("layout_left", Action::ToggleSidebar, "Toggle Primary Side Bar (Ctrl+B)"),
             ("layout_panel", Action::TogglePanel, "Toggle Panel (Ctrl+J)"),
-            ("layout_right", Action::ToggleClaude, "Toggle Claude Code (Ctrl+Alt+B)"),
+            ("layout_right", Action::ToggleClaude, "Toggle Agent Panel (Ctrl+Alt+B)"),
             ("win_close", Action::Quit, "Close"),
         ];
         let buttons_w: i32 = buttons.iter().map(|(name, _, _)| width(icon(name)) + 2).sum();
-        let mut bx = (w - buttons_w).max(menus_end);
+        // The agent picker sits left of them: the running agent's name, or "Agents".
+        let agent = if self.claude.is_some() { AGENTS[self.agent].0 } else { "Agents" };
+        let agent = format!("{} {} {}", icon("claude"), agent, icon("chevron_down"));
+        let mut bx = (w - buttons_w - width(&agent) - 3).max(menus_end);
         let buttons_start = bx;
+        self.lay.agent_button = Rect::new(bx, 0, width(&agent) + 2, 1);
+        bx = self.button(buf, bx, 0, &agent, fg, (None, Some(select)), Action::AgentMenu, Some("Start a coding agent in the side panel")) + 1;
         for (name, action, tip) in buttons {
             let hover = if name == "win_close" {
                 (Some(t.c("button.foreground")), Some(t.c("windowClose.hoverBackground")))
@@ -298,8 +303,9 @@ impl App {
                 // Section header: the workspace name and the tree's buttons.
                 let y = area.y + 2;
                 buf.fill(Rect::new(area.x, y, area.w, 1), Style::new(fg, t.c("sideBarSectionHeader.background")));
-                let actions: [(&str, Action, &'static str); 3] = [
-                    ("new_file", Action::NewFile, "New File..."),
+                let actions: [(&str, Action, &'static str); 4] = [
+                    ("new_file", Action::NewFileIn, "New File..."),
+                    ("new_folder", Action::NewFolder, "New Folder..."),
                     ("refresh", Action::RefreshExplorer, "Refresh Explorer"),
                     ("collapse_all", Action::CollapseExplorer, "Collapse Folders in Explorer"),
                 ];
@@ -566,13 +572,14 @@ impl App {
         let quiet = t.c("descriptionForeground");
         buf.fill(area, Style::new(t.c("sideBar.foreground"), t.c("sideBar.background")));
         let x = buf.print(area.x + 2, area.y, icon("claude"), t.c("claude.accent"), 0, area.right());
-        buf.print(x + 1, area.y, "CLAUDE CODE", t.c("sideBarTitle.foreground"), 0, area.right() - 1);
+        let title = if self.claude.is_some() { AGENTS[self.agent].0.to_uppercase() } else { "AGENT".to_string() };
+        buf.print(x + 1, area.y, &title, t.c("sideBarTitle.foreground"), 0, area.right() - 1);
         let hover = (Some(t.c("foreground")), Some(t.c("list.activeSelectionBackground")));
         let close_x = area.right() - 1 - (width(icon("close")) + 2);
         let add_x = close_x - (width(icon("add")) + 2);
         if add_x > x + 12 {
-            self.button(buf, add_x, area.y, icon("add"), quiet, hover, Action::RestartClaude, Some("New Conversation (restarts Claude Code)"));
-            self.button(buf, close_x, area.y, icon("close"), quiet, hover, Action::ToggleClaude, Some("Hide Claude Code (Ctrl+Alt+B)"));
+            self.button(buf, add_x, area.y, icon("add"), quiet, hover, Action::RestartClaude, Some("New Conversation (restarts the agent)"));
+            self.button(buf, close_x, area.y, icon("close"), quiet, hover, Action::ToggleClaude, Some("Hide Agent Panel (Ctrl+Alt+B)"));
         }
         let view = Rect::new(area.x + 1, area.y + 2, area.w - 1, area.h - 2);
         let focused = self.focus == Focus::Claude && self.modals.is_empty();
@@ -584,8 +591,8 @@ impl App {
                 claude.draw(buf, view, t, focused, line_cursor)
             }
             None => {
-                let text = "Claude Code isn't installed, so this panel has nothing to run.\n\n\
-                            Install it from https://claude.com/claude-code, then restart tscode.";
+                let text = "No agent is running.\n\n\
+                            Pick one (Claude Code, Codex, Grok, Antigravity...) from the Agents menu in the top-right corner.";
                 self.note(buf, t, area.x + 2, area.y + 2, area.right() - 2, area.bottom(), text);
                 None
             }

@@ -46,7 +46,7 @@ MENUS: dict[str, list[tuple[str, str, str] | None]] = {
         None,
         ("Toggle Primary Side Bar", "Ctrl+B", "toggle_sidebar"),
         ("Toggle Panel", "Ctrl+J", "toggle_panel"),
-        ("Toggle Claude Code", "Ctrl+Alt+B", "toggle_claude"),
+        ("Toggle Agent Panel", "Ctrl+Alt+B", "toggle_claude"),
     ],
     "Go": [
         ("Go to File...", "Ctrl+P", "quick_open"),
@@ -62,14 +62,21 @@ MENUS: dict[str, list[tuple[str, str, str] | None]] = {
         ("Focus Terminal", "Ctrl+`", "focus_terminal"),
         ("Restart Terminal", "", "restart_terminal"),
         None,
-        ("Open Claude Code", "", "focus_claude"),
-        ("Restart Claude Code", "", "restart_claude"),
+        ("Start Agent...", "", "agent_menu"),
+        ("Focus Agent", "", "focus_claude"),
+        ("Restart Agent", "", "restart_claude"),
+        ("Stop Agent", "", "stop_agent"),
     ],
     "Help": [
         ("Show All Commands", "F1", "command_palette"),
         ("About", "", "about"),
     ],
 }
+
+
+def agent_label(name: str | None) -> str:
+    """The agent picker's text: the running agent's name, or "Agents"."""
+    return f"{icon('claude')} {name or 'Agents'} {icon('chevron_down')}"
 
 
 class MenuButton(Static):
@@ -110,7 +117,9 @@ class TitleBar(Horizontal):
         )
         yield Static(icon("cap_right"), classes="pill-cap")
         yield Static(classes="spacer")
+        yield ActionButton(agent_label(None), "agent_menu", "Start a coding agent in the side panel",
+                           id="agent-button", classes="title-button")
         yield ActionButton(icon("layout_left"), "toggle_sidebar", "Toggle Primary Side Bar (Ctrl+B)", classes="title-button")
         yield ActionButton(icon("layout_panel"), "toggle_panel", "Toggle Panel (Ctrl+J)", classes="title-button")
-        yield ActionButton(icon("layout_right"), "toggle_claude", "Toggle Claude Code (Ctrl+Alt+B)", classes="title-button")
+        yield ActionButton(icon("layout_right"), "toggle_claude", "Toggle Agent Panel (Ctrl+Alt+B)", classes="title-button")
         yield ActionButton(icon("win_close"), "quit", "Close", id="win-close", classes="title-button")

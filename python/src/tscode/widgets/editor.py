@@ -24,6 +24,16 @@ from .common import ChoiceModal, InputModal
 
 MAX_FILE_BYTES = 5_000_000
 
+EDITOR_MENU = [
+    ("Cut", "Ctrl+X", "editor('cut')"),
+    ("Copy", "Ctrl+C", "editor('copy')"),
+    ("Paste", "Ctrl+V", "editor('paste')"),
+    None,
+    ("Select All", "Ctrl+A", "editor('select_all')"),
+    None,
+    ("Command Palette...", "F1", "command_palette"),
+]
+
 class CodeEditor(TextArea):
     """One open text document."""
 
@@ -117,6 +127,16 @@ class CodeEditor(TextArea):
         self._add_diagnostic_highlights()
         self._line_cache.clear()
         self.refresh()
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button == 3:
+            event.prevent_default()  # a right-click keeps the selection; it opens the menu
+
+    def on_click(self, event: events.Click) -> None:
+        if event.button == 3:
+            event.stop()
+            self.focus()
+            self.app.context_menu(EDITOR_MENU, event.screen_x, event.screen_y)
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         """Hovering a squiggle shows what is wrong."""
@@ -248,7 +268,9 @@ class TabBar(Widget):
         for tab in self._tabs:
             if tab.start <= event.x < tab.end:
                 event.stop()
-                if event.button == 2 or event.x >= tab.end - 3:
+                if event.button == 3:
+                    self.app.tab_menu(tab.doc_id, event.screen_x, event.screen_y)
+                elif event.button == 2 or event.x >= tab.end - 3:
                     self.post_message(self.CloseRequested(tab.doc_id))
                 else:
                     self.post_message(self.Activated(tab.doc_id))

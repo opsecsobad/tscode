@@ -6,6 +6,7 @@ use crate::screen::{width, Buffer, Rect, Rgb, Style, BOLD, DIM, UNDERLINE};
 use crate::sidebar::TextInput;
 use crate::theme::VSTheme;
 use crate::util::fuzzy;
+use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Word-wrap text to a width, keeping its own line breaks.
@@ -165,6 +166,8 @@ impl Menu {
 pub enum ChoiceThen {
     CloseDoc(u64),
     Quit,
+    /// Delete the path the context menu was opened on.
+    Delete,
 }
 
 /// VS Code style confirmation dialog. The answer is the label of the chosen button.
@@ -264,7 +267,18 @@ pub enum After {
 }
 
 /// A quick-input box at the top of the window (like VS Code's Save As prompt).
+/// What the typed text is for.
+#[derive(Clone, PartialEq)]
+pub enum InputKind {
+    SaveAs,
+    /// Create a file / folder inside this folder.
+    NewFile(PathBuf),
+    NewFolder(PathBuf),
+    Rename(PathBuf),
+}
+
 pub struct InputBox {
+    pub kind: InputKind,
     prompt: String,
     pub input: TextInput,
     placeholder: &'static str,
@@ -276,7 +290,12 @@ pub struct InputBox {
 
 impl InputBox {
     pub fn new(prompt: &str, value: &str, placeholder: &'static str, doc: u64, after: After) -> InputBox {
-        InputBox { prompt: prompt.to_string(), input: TextInput::new(value), placeholder, doc, after, rect: Rect::default() }
+        InputBox { kind: InputKind::SaveAs, prompt: prompt.to_string(), input: TextInput::new(value), placeholder, doc, after, rect: Rect::default() }
+    }
+
+    pub fn kind(mut self, kind: InputKind) -> InputBox {
+        self.kind = kind;
+        self
     }
 
     pub fn contains(&self, x: i32, y: i32) -> bool {

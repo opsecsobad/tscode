@@ -41,6 +41,7 @@ const ICONS: &[(&str, &str, &str)] = &[
     ("arrow_right", "\u{ea9c}", "->"),
     ("refresh", "\u{eb37}", "@"),
     ("new_file", "\u{ea7f}", "+"),
+    ("new_folder", "\u{ea80}", "+/"),
     ("collapse_all", "\u{eac5}", "="),
     ("win_close", "\u{eab8}", "X"),
     ("layout_left", "\u{ebf3}", "[|"),

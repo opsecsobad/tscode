@@ -326,6 +326,41 @@ impl Explorer {
         clamp_top(&mut self.top, self.entries.len(), self.area.h);
     }
 
+    /// Select the row at screen row `y` without opening it (right-click). None = empty space.
+    pub fn select_at(&mut self, y: i32) -> Option<PathBuf> {
+        let index = self.top + (y - self.area.y).max(0) as usize;
+        let path = self.entries.get(index)?.path.clone();
+        self.selected = index;
+        Some(path)
+    }
+
+    /// Where a new file goes, like VS Code: the selected folder, or the folder of the selected file.
+    pub fn target_dir(&self) -> PathBuf {
+        match self.entries.get(self.selected) {
+            Some(entry) if entry.is_dir => entry.path.clone(),
+            Some(entry) => entry.path.parent().unwrap_or(&self.root).to_path_buf(),
+            None => self.root.clone(),
+        }
+    }
+
+    /// Re-read the tree, open the folders above `path` and select it.
+    pub fn reveal(&mut self, path: &Path) {
+        self.reload();
+        let mut chain: Vec<&Path> = path.ancestors().skip(1).take_while(|p| p.starts_with(&self.root) && *p != self.root).collect();
+        chain.reverse();
+        for folder in chain {
+            if let Some(index) = self.entries.iter().position(|e| e.path == folder) {
+                if !self.entries[index].expanded {
+                    self.toggle(index);
+                }
+            }
+        }
+        if let Some(index) = self.entries.iter().position(|e| e.path == path) {
+            self.selected = index;
+            scroll_into_view(&mut self.top, index, self.area.h);
+        }
+    }
+
     pub fn draw(&mut self, buf: &mut Buffer, area: Rect, theme: &VSTheme, focused: bool, mouse: (i32, i32)) {
         self.area = area;
         clamp_top(&mut self.top, self.entries.len(), area.h);

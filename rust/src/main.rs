@@ -55,7 +55,8 @@ fn restore_terminal(enhanced: bool) {
         let _ = queue!(out, PopKeyboardEnhancementFlags);
     }
     // Give the terminal its own cursor shape back.
-    let _ = out.write_all(b"\x1b[0 q\x1b[?25h");
+    // ...and its normal mouse pointer.
+    let _ = out.write_all(b"\x1b[0 q\x1b[?25h\x1b]22;default\x1b\\");
     let _ = execute!(out, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
 }

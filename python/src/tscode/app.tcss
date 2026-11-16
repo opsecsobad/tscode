@@ -359,3 +359,13 @@ Terminal { width: 1fr; height: 1fr; background: $vs-terminal-background; }
 #spotify-toggle { color: $vs-spotify-accent; }
 #spotify-volume { width: 5; text-align: center; color: $vs-descriptionForeground; }
 #spotify-client-id { margin: 1 0 0 0; }
+
+/* ---- mouse pointer: I-beam over text, hand over things you can click ---- */
+CodeEditor, Terminal, Input { pointer: text; }
+.title-button, .menu-button, .header-button, .activity-item, .panel-tab, #command-center,
+#tabbar, .sidebar-tree, OptionList, Button, #statusbar { pointer: pointer; }
+.splitter.-v { pointer: ew-resize; }
+.splitter.-h { pointer: ns-resize; }
+
+/* The editor scroll bar is two cells wide so it is easy to grab. */
+CodeEditor { scrollbar-size-vertical: 2; }

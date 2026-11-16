@@ -380,6 +380,11 @@ class Terminal(Widget, can_focus=True):
     def _send_mouse(self, code: int, x: int, y: int, release: bool = False) -> None:
         self.write(f"\x1b[<{code};{x + 1};{y + 1}{'m' if release else 'M'}")
 
+    def on_click(self, event: events.Click) -> None:
+        if event.button == 3 and not self._mouse_tracking():
+            event.stop()
+            self.app.terminal_menu(self, event.screen_x, event.screen_y)
+
     def on_mouse_down(self, event: events.MouseDown) -> None:
         self.focus()
         if self._mouse_tracking():

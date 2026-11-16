@@ -42,7 +42,7 @@ class ActivityBar(Vertical):
     def compose(self) -> ComposeResult:
         for item_id, icon_name, tooltip in VIEWS:
             yield ActivityItem(item_id, icon_name, tooltip)
-        yield ActivityItem("claude", "claude", "Claude Code (Ctrl+Alt+B)")
+        yield ActivityItem("claude", "claude", "Agent Panel (Ctrl+Alt+B)")
         yield Static(classes="spacer")
         yield ActivityItem("account", "account", "Accounts")
         yield ActivityItem("settings", "gear", "Manage")

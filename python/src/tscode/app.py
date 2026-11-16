@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shlex
+import shutil
+import subprocess
 from importlib.metadata import version
 from pathlib import Path
 
@@ -17,14 +19,14 @@ from .commands import CommandProvider, FileProvider
 from .settings import cursor_is_line, load_settings, save_setting, spotify_enabled
 from .theme import available_themes, load_theme, terminal_theme_stamp
 from .widgets.activitybar import ActivityBar
-from .widgets.common import ChoiceModal, MenuScreen, QuickPick, Splitter
+from .widgets.common import ChoiceModal, InputModal, MenuScreen, QuickPick, Splitter
 from .widgets.editor import CodeEditor, EditorArea
-from .widgets.panel import ClaudePanel, Panel
+from .widgets.panel import AGENTS, ClaudePanel, Panel, agent_command
 from .widgets.spotify import SpotifyPlayer
 from .widgets.sidebar import ExplorerTree, OpenFile, Sidebar, SourceControlView
 from .widgets.statusbar import StatusBar
 from .widgets.terminal import Terminal
-from .widgets.titlebar import TitleBar
+from .widgets.titlebar import TitleBar, agent_label
 
 RUNNERS = {".py": "python3", ".sh": "bash", ".bash": "bash", ".js": "node", ".mjs": "node"}
 
@@ -73,6 +75,7 @@ class TerminalStudioCode(App):
         self.cursor_line = cursor_is_line()  # thin line cursor (default) or block
         self._hw_cursor = False
         self.spotify_enabled = spotify_enabled()  # shelved feature, off by default
+        self._menu_path: Path | None = None  # the path a context menu was opened on
         super().__init__()
         self.register_theme(self.vs_theme.textual_theme())
         self.theme = self.vs_theme.name
@@ -97,8 +100,8 @@ class TerminalStudioCode(App):
         yield StatusBar(self.workspace)
 
     def on_mount(self) -> None:
-        # Claude Code needs room; start with it open only on wide terminals.
-        self._set_visible("claude", self.size.width >= 150)
+        # No agent starts by itself: pick one from the Agents menu in the title bar.
+        self._set_visible("claude", False)
         for player in self.query(SpotifyPlayer):
             player.display = load_settings().get("spotify", True)
         for path in self._open_on_start:
@@ -262,6 +265,201 @@ class TerminalStudioCode(App):
         else:
             self.action_show_view(item)
 
+    # -- context menus --------------------------------------------------------
+
+    def context_menu(self, items: list, x: int, y: int) -> None:
+        """Open a right-click menu at (x, y); the chosen item's app action runs."""
+
+        async def picked(action: str | None) -> None:
+            if action:
+                await self.run_action(action)
+
+        self.push_screen(MenuScreen(items, x=x, y=y), picked)
+
+    def explorer_menu(self, path: Path | None, x: int, y: int) -> None:
+        self._menu_path = path
+        items: list = [("New File...", "", "new_file_in"), ("New Folder...", "", "new_folder"), None]
+        if path is not None:
+            items += [("Rename...", "", "rename"), ("Delete", "", "delete"), None,
+                      ("Copy Path", "", "copy_path(False)"), ("Copy Relative Path", "", "copy_path(True)")]
+        else:
+            items += [("Refresh Explorer", "", "refresh_explorer"), ("Collapse Folders", "", "collapse_explorer")]
+        self.context_menu(items, x, y)
+
+    def tab_menu(self, doc_id: str, x: int, y: int) -> None:
+        doc = next((d for d in self.editors.docs if d.id == doc_id), None)
+        self._menu_path = getattr(doc, "path", None)
+        items: list = [("Close", "Ctrl+W", f"close_tab('{doc_id}')"),
+                       ("Close Others", "", f"close_others('{doc_id}')"),
+                       ("Close All", "", "close_others('')")]
+        if self._menu_path is not None:
+            items += [None, ("Copy Path", "", "copy_path(False)"), ("Copy Relative Path", "", "copy_path(True)")]
+        self.context_menu(items, x, y)
+
+    def terminal_menu(self, terminal: Terminal, x: int, y: int) -> None:
+        if terminal is self.claude.terminal:
+            items = [("Switch Agent...", "", "agent_menu"), ("New Conversation", "", "restart_claude"),
+                     ("Stop Agent", "", "stop_agent"), None, ("Hide Agent Panel", "Ctrl+Alt+B", "toggle_claude")]
+        else:
+            items = [("Restart Terminal", "", "restart_terminal"), ("Hide Panel", "Ctrl+J", "toggle_panel")]
+        self.context_menu(items, x, y)
+
+    # -- explorer file operations ---------------------------------------------
+
+    def _ask_new(self, folder: bool) -> None:
+        """Ask for a name, then create a file/folder in the right-clicked (or selected) folder."""
+        tree = self.query_one(ExplorerTree)
+        path, self._menu_path = self._menu_path, None
+        if path is None:
+            node = tree.cursor_node
+            path = node.data.path if node is not None and node.data else self.workspace
+        parent = path if path.is_dir() else path.parent
+        shown = "" if parent == self.workspace else str(parent.relative_to(self.workspace)) + "/"
+
+        def chosen(name: str | None) -> None:
+            if not name:
+                return
+            target = parent / name
+            if target.exists():
+                self.notify(f"'{name}' already exists in this folder. Choose a different name.", severity="warning")
+                return
+            try:
+                if folder:
+                    target.mkdir(parents=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.touch()
+            except OSError as error:
+                self.notify(f"Could not create '{name}': {error}", severity="error")
+                return
+            tree.reload()
+            if not folder:
+                self.open_file(target)
+
+        what = "New Folder" if folder else "New File"
+        self.push_screen(
+            InputModal(f"{what} in {shown or 'the workspace folder'} (Enter to create, Esc to cancel)",
+                       placeholder="folder name" if folder else "file name"),
+            chosen,
+        )
+
+    def action_new_file_in(self) -> None:
+        self._ask_new(folder=False)
+
+    def action_new_folder(self) -> None:
+        self._ask_new(folder=True)
+
+    def action_rename(self) -> None:
+        old = self._menu_path
+        if old is None:
+            return
+
+        def chosen(name: str | None) -> None:
+            if not name or name == old.name:
+                return
+            target = old.with_name(name)
+            if target.exists():
+                self.notify(f"'{name}' already exists in this folder. Choose a different name.", severity="warning")
+                return
+            try:
+                old.rename(target)
+            except OSError as error:
+                self.notify(f"Could not rename '{old.name}': {error}", severity="error")
+                return
+            for doc in self.editors.docs:  # open editors follow the file to its new name
+                path = getattr(doc, "path", None)
+                if path is not None and (path == old or old in path.parents):
+                    doc.path = target / path.relative_to(old) if path != old else target
+                    doc.title = doc.path.name
+            self.editors._sync()
+            self.query_one(ExplorerTree).reload()
+
+        self.push_screen(InputModal(f"Rename '{old.name}' (Enter to confirm, Esc to cancel)", old.name), chosen)
+
+    def action_delete(self) -> None:
+        path = self._menu_path
+        if path is None or path == self.workspace:
+            return
+        trash = shutil.which("gio") is not None
+
+        def answered(choice: str | None) -> None:
+            if choice not in ("Move to Trash", "Delete"):
+                return
+            try:
+                if trash:
+                    done = subprocess.run(["gio", "trash", str(path)], capture_output=True, text=True)
+                    if done.returncode != 0:
+                        raise OSError(done.stderr.strip())
+                elif path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except OSError as error:
+                self.notify(f"Could not delete '{path.name}': {error}", severity="error")
+                return
+            for doc in list(self.editors.docs):
+                doc_path = getattr(doc, "path", None)
+                if doc_path is not None and (doc_path == path or path in doc_path.parents):
+                    self.editors._remove(doc)
+            self.query_one(ExplorerTree).reload()
+
+        self.push_screen(
+            ChoiceModal(
+                f"Are you sure you want to delete '{path.name}'{' and its contents' if path.is_dir() else ''}?",
+                "You can restore it from the Trash." if trash else "This cannot be undone.",
+                ["Move to Trash" if trash else "Delete", "Cancel"],
+            ),
+            answered,
+        )
+
+    def action_copy_path(self, relative: bool) -> None:
+        path = self._menu_path
+        if path is None:
+            return
+        if relative and path.is_relative_to(self.workspace):
+            path = path.relative_to(self.workspace)
+        self.copy_to_clipboard(str(path))
+
+    def action_close_tab(self, doc_id: str) -> None:
+        self.editors.close(doc_id)
+
+    def action_close_others(self, keep: str) -> None:
+        """Close every editor except `keep` ('' closes them all)."""
+        for doc in list(self.editors.docs):
+            if doc.id != keep:
+                self.editors.close(doc.id)
+
+    # -- agents ---------------------------------------------------------------
+
+    def action_agent_menu(self) -> None:
+        running = self.claude.agent
+        items: list = [(name, "running" if index == running else "", f"start_agent({index})")
+                       for index, (name, _) in enumerate(AGENTS) if agent_command(index)]
+        if not items:
+            self.notify("No coding agent is installed. Install Claude Code, Codex, Grok or another agent CLI, "
+                        "then try again.", severity="warning")
+            return
+        if running is not None:
+            items += [None, ("New Conversation", "", "restart_claude"), ("Stop Agent", "", "stop_agent")]
+        button = self.query_one("#agent-button")
+        self.context_menu(items, button.region.x, 1)
+
+    async def action_start_agent(self, index: int) -> None:
+        if agent_command(index) is None:
+            name, command = AGENTS[index]
+            self.notify(f"{name} isn't installed (no `{command}` command found).", severity="warning")
+            return
+        if self.claude.agent != index:
+            await self.claude.start(index)
+            self.query_one("#agent-button").update(agent_label(AGENTS[index][0]))
+        self.action_focus_claude()
+
+    async def action_stop_agent(self) -> None:
+        if self.focused is not None and self.focused is self.claude.terminal:
+            self.set_focus(self.editors.active_editor)
+        await self.claude.stop()
+        self.query_one("#agent-button").update(agent_label(None))
+
     # -- file actions ---------------------------------------------------------
 
     def action_new_file(self) -> None:
@@ -380,6 +578,8 @@ class TerminalStudioCode(App):
         self.action_focus_claude()
         if self.claude.terminal is not None:
             self.claude.terminal.restart()
+        else:
+            self.action_agent_menu()
 
     def _parts(self) -> list:
         """Focusable regions in F6 order."""

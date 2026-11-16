@@ -104,9 +104,11 @@ class MenuScreen(ModalScreen[str | None]):
         # The box gives the rounded border a solid backdrop (a border drawn straight on the
         # transparent modal would show the wrong colour behind its corners).
         box = Vertical(OptionList(*options, id="menu"), classes="popup-box")
-        box.styles.offset = (max(0, self.x), max(0, self.y))
-        box.styles.width = left + right + 8
-        box.styles.height = len(self.items) + 2
+        width, height = left + right + 8, len(self.items) + 2
+        screen = self.app.size  # keep the whole menu on screen (context menus open anywhere)
+        box.styles.offset = (max(0, min(self.x, screen.width - width)), max(0, min(self.y, screen.height - height)))
+        box.styles.width = width
+        box.styles.height = height
         yield box
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:

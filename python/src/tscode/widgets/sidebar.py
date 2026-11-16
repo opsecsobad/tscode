@@ -9,7 +9,7 @@ from typing import Iterable
 
 from rich.style import Style
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
@@ -44,6 +44,20 @@ class ExplorerTree(DirectoryTree):
 
     def on_mount(self) -> None:
         self.set_interval(2.0, self._poll_disk)
+
+    def on_click(self, event: events.Click) -> None:
+        """Right-click: select the row (without opening it) and show its menu."""
+        if event.button != 3:
+            return
+        event.prevent_default()
+        event.stop()
+        line = event.style.meta.get("line")
+        node = self.get_node_at_line(line) if line is not None else None
+        if node is not None:
+            self.move_cursor(node)
+        self.focus()
+        path = node.data.path if node is not None and node.data else None
+        self.app.explorer_menu(path, event.screen_x, event.screen_y)
 
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
         return [p for p in paths if p.name not in HIDDEN]
@@ -251,7 +265,8 @@ class Sidebar(Vertical):
                     yield Static(
                         f"{icon('chevron_down')} {self.workspace.name.upper()}", classes="section-title"
                     )
-                    yield ActionButton(icon("new_file"), "new_file", "New File...", classes="header-button")
+                    yield ActionButton(icon("new_file"), "new_file_in", "New File...", classes="header-button")
+                    yield ActionButton(icon("new_folder"), "new_folder", "New Folder...", classes="header-button")
                     yield ActionButton(icon("refresh"), "refresh_explorer", "Refresh Explorer", classes="header-button")
                     yield ActionButton(icon("collapse_all"), "collapse_explorer", "Collapse Folders in Explorer", classes="header-button")
                 yield ExplorerTree(self.workspace)

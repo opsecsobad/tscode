@@ -3,9 +3,9 @@
 //! Everything the user can do is an `Action`. Menus, palette commands, key bindings
 //! and clickable icons all name one, and `App::run` carries it out.
 
-use crate::editor::{Doc, EdCmd, MAX_FILE_BYTES};
+use crate::editor::{Doc, EdCmd, MAX_FILE_BYTES, SCROLLBAR_W};
 use crate::highlight::{spawn_checker, spawn_highlighter, DiagRequest, DiagResult, HlRequest, HlResult};
-use crate::popups::{After, Choice, ChoiceThen, InputBox, Menu, MenuItem, MenuOutcome, Modal, Palette, PaletteOutcome, PickOutcome, QuickPick, Target};
+use crate::popups::{After, Choice, ChoiceThen, InputBox, InputKind, Menu, MenuItem, MenuOutcome, Modal, Palette, PaletteOutcome, PickOutcome, QuickPick, Target};
 use crate::screen::Rect;
 use crate::settings::{cursor_is_line, home, load_settings, save_setting};
 use crate::sidebar::{Explorer, Scm, ScmOutcome, Search};
@@ -87,6 +87,42 @@ pub enum Action {
     PanelTab(usize),
     ActivateDoc(u64),
     CloseDoc(u64),
+    CloseOthers(u64),
+    CloseAll,
+    // Explorer file operations; they act on the right-clicked row, or the selection.
+    NewFileIn,
+    NewFolder,
+    Rename,
+    Delete,
+    CopyPath(bool),
+    // The agent panel.
+    AgentMenu,
+    StartAgent(usize),
+    StopAgent,
+}
+
+/// Coding agents the right-hand panel can run: (name, command). Only installed ones are offered.
+pub const AGENTS: &[(&str, &str)] = &[
+    ("Claude Code", "claude"),
+    ("Codex", "codex"),
+    ("Grok", "grok"),
+    ("Antigravity", "agy"),
+    ("Gemini", "gemini"),
+    ("OpenCode", "opencode"),
+    ("Cursor Agent", "cursor-agent"),
+];
+
+/// The command line for an agent, if it is installed. TSCODE_CLAUDE_CMD overrides Claude's.
+fn agent_command(index: usize) -> Option<Vec<String>> {
+    if index == 0 {
+        if let Ok(command) = std::env::var("TSCODE_CLAUDE_CMD") {
+            if !command.trim().is_empty() {
+                return Some(shell_split(&command));
+            }
+        }
+    }
+    let command = AGENTS.get(index)?.1;
+    which(command).map(|_| vec![command.to_string()])
 }
 
 /// Keys a focused terminal needs for itself (readline, Claude Code, vim...). The
@@ -167,7 +203,7 @@ pub const MENUS: &[(&str, &[MenuItem])] = &[
         None,
         item("Toggle Primary Side Bar", "Ctrl+B", Action::ToggleSidebar),
         item("Toggle Panel", "Ctrl+J", Action::TogglePanel),
-        item("Toggle Claude Code", "Ctrl+Alt+B", Action::ToggleClaude),
+        item("Toggle Agent Panel", "Ctrl+Alt+B", Action::ToggleClaude),
     ]),
     ("Go", &[
         item("Go to File...", "Ctrl+P", Action::QuickOpen),
@@ -181,8 +217,10 @@ pub const MENUS: &[(&str, &[MenuItem])] = &[
         item("Focus Terminal", "Ctrl+`", Action::FocusTerminal),
         item("Restart Terminal", "", Action::RestartTerminal),
         None,
-        item("Open Claude Code", "", Action::FocusClaude),
-        item("Restart Claude Code", "", Action::RestartClaude),
+        item("Start Agent...", "", Action::AgentMenu),
+        item("Focus Agent", "", Action::FocusClaude),
+        item("Restart Agent", "", Action::RestartClaude),
+        item("Stop Agent", "", Action::StopAgent),
     ]),
     ("Help", &[item("Show All Commands", "F1", Action::CommandPalette), item("About", "", Action::About)]),
 ];
@@ -190,6 +228,8 @@ pub const MENUS: &[(&str, &[MenuItem])] = &[
 /// Show All Commands: (title, action).
 const COMMANDS: &[(&str, Action)] = &[
     ("File: New Text File", Action::NewFile),
+    ("File: New File...", Action::NewFileIn),
+    ("File: New Folder...", Action::NewFolder),
     ("File: Save", Action::Save),
     ("File: Save As...", Action::SaveAs),
     ("View: Close Editor", Action::CloseEditor),
@@ -199,15 +239,17 @@ const COMMANDS: &[(&str, Action)] = &[
     ("View: Show Source Control", Action::ShowView(View::Scm)),
     ("View: Toggle Primary Side Bar Visibility", Action::ToggleSidebar),
     ("View: Toggle Panel Visibility", Action::TogglePanel),
-    ("View: Toggle Claude Code", Action::ToggleClaude),
+    ("View: Toggle Agent Panel", Action::ToggleClaude),
     ("View: Focus Next Part", Action::FocusNextPart),
     ("View: Open Next Editor", Action::NextEditor),
     ("View: Open Previous Editor", Action::PreviousEditor),
     ("Terminal: Focus Terminal", Action::FocusTerminal),
     ("Terminal: Kill and Restart Terminal", Action::RestartTerminal),
     ("Terminal: Run Active File in Terminal", Action::RunFile),
-    ("Claude Code: Focus", Action::FocusClaude),
-    ("Claude Code: New Conversation", Action::RestartClaude),
+    ("Agent: Start...", Action::AgentMenu),
+    ("Agent: Focus", Action::FocusClaude),
+    ("Agent: New Conversation", Action::RestartClaude),
+    ("Agent: Stop", Action::StopAgent),
     ("Preferences: Color Theme", Action::SelectTheme),
     ("Explorer: Refresh", Action::RefreshExplorer),
     ("Help: About", Action::About),
@@ -320,6 +362,7 @@ pub enum Drag {
     Panel,
     Claude,
     Select,
+    Scrollbar,
     Term(usize),
 }
 
@@ -354,6 +397,7 @@ pub struct Layout {
     pub shell: Option<Rect>,
     pub claude_term: Option<Rect>,
     pub gear: Rect,
+    pub agent_button: Rect,
     pub menu_x: Vec<i32>,
 }
 
@@ -388,7 +432,15 @@ pub struct App {
     pub scm: Scm,
     pub shell: Term,
     pub shell_name: String,
+    /// The running agent's terminal (None until one is picked from the Agents menu).
     pub claude: Option<Term>,
+    /// Index into AGENTS of the agent in `claude`.
+    pub agent: usize,
+    agent_generation: u64,
+    /// The path a context menu was opened on.
+    context: Option<PathBuf>,
+    /// Mouse pointer shape last sent to the terminal.
+    shape: &'static str,
     pub modals: Vec<Modal>,
     pub toasts: Vec<Toast>,
     clipboard: String,
@@ -418,11 +470,6 @@ impl App {
             .filter(|s| !s.is_empty())
             .or_else(|| which("bash").map(|p| p.to_string_lossy().to_string()))
             .unwrap_or_else(|| "/bin/sh".to_string());
-        // The command for the Claude panel. Override with TSCODE_CLAUDE_CMD.
-        let claude_command = match std::env::var("TSCODE_CLAUDE_CMD") {
-            Ok(command) if !command.trim().is_empty() => Some(shell_split(&command)),
-            _ => which("claude").map(|_| vec!["claude".to_string()]),
-        };
         let now = Instant::now();
         let mut app = App {
             theme: Rc::new(theme),
@@ -432,8 +479,8 @@ impl App {
             diag_tx: spawn_checker(tx.clone()),
             sidebar_visible: true,
             panel_visible: true,
-            // Claude Code needs room; start with it open only on wide terminals.
-            claude_visible: size.0 >= 150,
+            // No agent starts by itself: pick one from the Agents menu in the title bar.
+            claude_visible: false,
             sidebar_w: 32,
             panel_h: 14,
             claude_w: 64,
@@ -450,7 +497,11 @@ impl App {
             scm: Scm::new(workspace.clone()),
             shell_name: Path::new(&shell).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
             shell: Term::new(0, vec![shell], workspace.clone(), tx.clone()),
-            claude: claude_command.map(|command| Term::new(1, command, workspace.clone(), tx.clone())),
+            claude: None,
+            agent: 0,
+            agent_generation: 0,
+            context: None,
+            shape: "default",
             modals: Vec::new(),
             toasts: Vec::new(),
             clipboard: String::new(),
@@ -523,6 +574,44 @@ impl App {
             }
         }
         self.sync_docs();
+        // Tell the terminal which mouse pointer to show (OSC 22; ignored where unsupported).
+        let shape = self.pointer_shape();
+        if shape != self.shape {
+            self.shape = shape;
+            self.out.push_str(&format!("\x1b]22;{shape}\x1b\\"));
+        }
+    }
+
+    /// I-beam over text, hand over things you can click, arrows over the splitters.
+    fn pointer_shape(&self) -> &'static str {
+        let (x, y) = self.mouse;
+        let within = |rect: Option<Rect>| rect.map_or(false, |r| r.contains(x, y));
+        match self.drag {
+            Some(Drag::Sidebar | Drag::Claude) => return "ew-resize",
+            Some(Drag::Panel) => return "ns-resize",
+            Some(Drag::Select) => return "text",
+            _ => {}
+        }
+        if !self.modals.is_empty() {
+            "default"
+        } else if within(self.lay.sidebar_split) || within(self.lay.claude_split) {
+            "ew-resize"
+        } else if within(self.lay.panel_split) {
+            "ns-resize"
+        } else if self.hits.iter().any(|hit| hit.rect.contains(x, y)) {
+            "pointer"
+        } else if within(self.lay.editor) {
+            match self.active_doc() {
+                Some(doc) if doc.is_text() && doc.over_text(x, y) => "text",
+                _ => "default",
+            }
+        } else if within(self.lay.search_input) || self.term_at(x, y).is_some() {
+            "text"
+        } else if within(self.lay.explorer) || within(self.lay.search_results) || within(self.lay.scm) {
+            "pointer"
+        } else {
+            "default"
+        }
     }
 
     fn term(&mut self, id: usize) -> Option<&mut Term> {
@@ -742,10 +831,13 @@ impl App {
                     self.modals.pop();
                 }
                 KeyCode::Enter => {
-                    let (value, doc, after) = (input.input.value.trim().to_string(), input.doc, input.after);
+                    let (value, doc, after, kind) = (input.input.value.trim().to_string(), input.doc, input.after, input.kind.clone());
                     self.modals.pop();
-                    if !value.is_empty() {
+                    if value.is_empty() {
+                    } else if kind == InputKind::SaveAs {
                         self.save_as(doc, &value, after);
+                    } else {
+                        self.file_op(kind, &value);
                     }
                 }
                 _ => {
@@ -845,8 +937,11 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => self.mouse_down(x, y, shift),
             MouseEventKind::Down(button) => {
                 let hit = self.hits.iter().rev().find(|hit| hit.rect.contains(x, y)).map(|hit| hit.action);
+                let tracking = self.term_at(x, y).and_then(|id| self.term(id)).map_or(false, |t| t.mouse_tracking());
                 if let (MouseButton::Middle, Some(Action::ActivateDoc(id) | Action::CloseDoc(id))) = (button, hit) {
                     self.close_doc(id);
+                } else if button == MouseButton::Right && !tracking {
+                    self.context_menu(x, y, hit);
                 } else if let Some(id) = self.term_at(x, y) {
                     let code = if button == MouseButton::Middle { 1 } else { 2 };
                     if let Some(terminal) = self.term(id).filter(|t| t.mouse_tracking()) {
@@ -868,6 +963,11 @@ impl App {
                 Some(Drag::Select) => {
                     if let Some(doc) = self.active_editor() {
                         doc.mouse_drag(x, y);
+                    }
+                }
+                Some(Drag::Scrollbar) => {
+                    if let Some(doc) = self.active_editor() {
+                        doc.scrollbar_to(y);
                     }
                 }
                 Some(Drag::Term(id)) => {
@@ -952,10 +1052,16 @@ impl App {
             return;
         }
         if within(self.lay.editor) {
+            let bar = self.lay.editor.map_or(i32::MAX, |r| r.right() - SCROLLBAR_W);
             if let Some(doc) = self.active_editor() {
-                doc.mouse_down(x, y, shift);
+                if x >= bar {
+                    doc.scrollbar_to(y);
+                    self.drag = Some(Drag::Scrollbar);
+                } else {
+                    doc.mouse_down(x, y, shift);
+                    self.drag = Some(Drag::Select);
+                }
                 self.focus = Focus::Editor;
-                self.drag = Some(Drag::Select);
             }
         } else if within(self.lay.explorer) {
             self.focus = Focus::Explorer;
@@ -981,6 +1087,146 @@ impl App {
                 terminal.send_mouse(0, x, y, false);
             }
         }
+    }
+
+    /// The right-click menu for whatever is under the mouse.
+    fn context_menu(&mut self, x: i32, y: i32, hit: Option<Action>) {
+        let within = |rect: Option<Rect>| rect.map_or(false, |r| r.contains(x, y));
+        let mut items: Vec<MenuItem> = Vec::new();
+        if let Some(Action::ActivateDoc(id) | Action::CloseDoc(id)) = hit {
+            self.context = self.docs.iter().find(|doc| doc.id == id).and_then(|doc| doc.path.clone());
+            items.extend([
+                item("Close", "Ctrl+W", Action::CloseDoc(id)),
+                item("Close Others", "", Action::CloseOthers(id)),
+                item("Close All", "", Action::CloseAll),
+            ]);
+            if self.context.is_some() {
+                items.extend([None, item("Copy Path", "", Action::CopyPath(false)), item("Copy Relative Path", "", Action::CopyPath(true))]);
+            }
+        } else if hit.is_some() {
+            return;
+        } else if within(self.lay.explorer) {
+            self.focus = Focus::Explorer;
+            self.context = self.explorer.select_at(y);
+            items.extend([item("New File...", "", Action::NewFileIn), item("New Folder...", "", Action::NewFolder), None]);
+            if self.context.is_some() {
+                items.extend([
+                    item("Rename...", "", Action::Rename),
+                    item("Delete", "", Action::Delete),
+                    None,
+                    item("Copy Path", "", Action::CopyPath(false)),
+                    item("Copy Relative Path", "", Action::CopyPath(true)),
+                ]);
+            } else {
+                items.extend([
+                    item("Refresh Explorer", "", Action::RefreshExplorer),
+                    item("Collapse Folders", "", Action::CollapseExplorer),
+                ]);
+            }
+        } else if within(self.lay.editor) && self.active_editor().is_some() {
+            self.focus = Focus::Editor;
+            items.extend([
+                item("Cut", "Ctrl+X", Action::Editor(EdCmd::Cut)),
+                item("Copy", "Ctrl+C", Action::Editor(EdCmd::Copy)),
+                item("Paste", "Ctrl+V", Action::Editor(EdCmd::Paste)),
+                None,
+                item("Select All", "Ctrl+A", Action::Editor(EdCmd::SelectAll)),
+                None,
+                item("Command Palette...", "F1", Action::CommandPalette),
+            ]);
+        } else if self.term_at(x, y) == Some(0) {
+            items.extend([
+                item("Restart Terminal", "", Action::RestartTerminal),
+                item("Hide Panel", "Ctrl+J", Action::TogglePanel),
+            ]);
+        } else if within(self.lay.claude) {
+            items.push(item("Switch Agent...", "", Action::AgentMenu));
+            if self.claude.is_some() {
+                items.extend([item("New Conversation", "", Action::RestartClaude), item("Stop Agent", "", Action::StopAgent)]);
+            }
+            items.extend([None, item("Hide Agent Panel", "Ctrl+Alt+B", Action::ToggleClaude)]);
+        } else {
+            return;
+        }
+        self.modals.push(Modal::Menu(Menu::new(items, x, y, false, None)));
+    }
+
+    /// Create or rename a file/folder from the name typed into the input box.
+    fn file_op(&mut self, kind: InputKind, name: &str) {
+        let (target, old) = match &kind {
+            InputKind::NewFile(dir) | InputKind::NewFolder(dir) => (normalize(&dir.join(name)), None),
+            InputKind::Rename(old) => (normalize(&old.with_file_name(name)), Some(old.clone())),
+            InputKind::SaveAs => return,
+        };
+        if target.exists() {
+            self.notify(None, &format!("'{name}' already exists in this folder. Choose a different name."), Severity::Warning, 5);
+            return;
+        }
+        let done = match (&kind, &old) {
+            (_, Some(old)) => fs::rename(old, &target),
+            (InputKind::NewFolder(_), _) => fs::create_dir_all(&target),
+            _ => target.parent().map_or(Ok(()), fs::create_dir_all).and_then(|_| fs::write(&target, "")),
+        };
+        if let Err(error) = done {
+            self.notify(None, &format!("Could not create '{name}': {error}"), Severity::Error, 6);
+            return;
+        }
+        if let Some(old) = old {
+            // Open editors follow the file to its new name.
+            for doc in &mut self.docs {
+                let moved = doc.path.as_ref().and_then(|path| path.strip_prefix(&old).ok().map(|rest| rest.to_path_buf()));
+                if let Some(rest) = moved {
+                    let path = if rest.as_os_str().is_empty() { target.clone() } else { target.join(rest) };
+                    doc.title = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    doc.path = Some(path);
+                }
+            }
+        }
+        self.explorer.reveal(&target);
+        if matches!(kind, InputKind::NewFile(_)) {
+            self.open_file(&target, None);
+        }
+    }
+
+    /// Delete the context path: to the Trash when `gio` is there, otherwise for good.
+    fn delete_context(&mut self, trash: bool) {
+        let Some(path) = self.context.take().filter(|path| *path != self.workspace) else { return };
+        let done = if trash {
+            match std::process::Command::new("gio").arg("trash").arg(&path).output() {
+                Ok(output) if output.status.success() => Ok(()),
+                Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+                Err(error) => Err(error.to_string()),
+            }
+        } else if path.is_dir() && !path.is_symlink() {
+            fs::remove_dir_all(&path).map_err(|e| e.to_string())
+        } else {
+            fs::remove_file(&path).map_err(|e| e.to_string())
+        };
+        if let Err(error) = done {
+            self.notify(None, &format!("Could not delete '{}': {error}", path.display()), Severity::Error, 6);
+            return;
+        }
+        let gone: Vec<u64> = self.docs.iter().filter(|doc| doc.path.as_ref().map_or(false, |p| p.starts_with(&path))).map(|doc| doc.id).collect();
+        for id in gone {
+            self.remove(id);
+        }
+        self.explorer.reload();
+    }
+
+    /// Ask for a name for a new file or folder in the context folder (or the selected one).
+    fn ask_new(&mut self, folder: bool) {
+        let dir = match self.context.take() {
+            Some(path) if path.is_dir() => path,
+            Some(path) => path.parent().unwrap_or(&self.workspace).to_path_buf(),
+            None => self.explorer.target_dir(),
+        };
+        let shown = dir.strip_prefix(&self.workspace).unwrap_or(&dir).to_string_lossy().to_string();
+        let place = if shown.is_empty() { "the workspace folder".to_string() } else { format!("{shown}/") };
+        let what = if folder { "New Folder" } else { "New File" };
+        let prompt = format!("{what} in {place} (Enter to create, Esc to cancel)");
+        let kind = if folder { InputKind::NewFolder(dir) } else { InputKind::NewFile(dir) };
+        let hint = if folder { "folder name" } else { "file name" };
+        self.modals.push(Modal::Input(InputBox::new(&prompt, "", hint, 0, After::Nothing).kind(kind)));
     }
 
     fn modal_mouse(&mut self, kind: MouseEventKind, x: i32, y: i32) {
@@ -1237,6 +1483,8 @@ impl App {
             (ChoiceThen::CloseDoc(id), Some("Save")) => self.save(id, After::Close, false),
             (ChoiceThen::CloseDoc(id), Some("Don't Save")) => self.remove(id),
             (ChoiceThen::Quit, Some("Don't Save")) => self.quit = true,
+            (ChoiceThen::Delete, Some("Move to Trash")) => self.delete_context(true),
+            (ChoiceThen::Delete, Some("Delete")) => self.delete_context(false),
             (ChoiceThen::Quit, Some("Save All")) => {
                 let saved: Vec<u64> = self.docs.iter().filter(|doc| doc.dirty && doc.path.is_some()).map(|doc| doc.id).collect();
                 for id in saved {
@@ -1388,8 +1636,92 @@ impl App {
             }
             Action::RestartClaude => {
                 self.run(Action::FocusClaude);
-                if let Some(claude) = &mut self.claude {
-                    claude.restart();
+                match &mut self.claude {
+                    Some(claude) => claude.restart(),
+                    None => self.run(Action::AgentMenu),
+                }
+            }
+            Action::AgentMenu => {
+                let running = self.claude.is_some().then_some(self.agent);
+                let mut items: Vec<MenuItem> = (0..AGENTS.len())
+                    .filter(|index| agent_command(*index).is_some())
+                    .map(|index| item(AGENTS[index].0, if running == Some(index) { "running" } else { "" }, Action::StartAgent(index)))
+                    .collect();
+                if items.is_empty() {
+                    self.notify(None, "No coding agent is installed. Install Claude Code, Codex, Grok or another agent CLI, then try again.", Severity::Warning, 8);
+                    return;
+                }
+                if running.is_some() {
+                    items.extend([None, item("New Conversation", "", Action::RestartClaude), item("Stop Agent", "", Action::StopAgent)]);
+                }
+                let button = self.lay.agent_button;
+                self.modals.push(Modal::Menu(Menu::new(items, button.x, 1, false, None)));
+            }
+            Action::StartAgent(index) => {
+                let Some(command) = agent_command(index) else {
+                    let (name, command) = AGENTS.get(index).copied().unwrap_or(("That agent", "it"));
+                    self.notify(None, &format!("{name} isn't installed (no `{command}` command found)."), Severity::Warning, 6);
+                    return;
+                };
+                if self.claude.is_none() || self.agent != index {
+                    // Output still in flight from the old agent must not reach the new one.
+                    if let Some(old) = self.claude.take() {
+                        self.agent_generation = old.generation + 1;
+                    }
+                    let mut term = Term::new(1, command, self.workspace.clone(), self.tx.clone());
+                    term.generation = self.agent_generation;
+                    self.claude = Some(term);
+                    self.agent = index;
+                }
+                self.run(Action::FocusClaude);
+            }
+            Action::StopAgent => {
+                if let Some(old) = self.claude.take() {
+                    self.agent_generation = old.generation + 1;
+                }
+                if self.focus == Focus::Claude {
+                    self.focus = Focus::Editor;
+                }
+            }
+            Action::NewFileIn => self.ask_new(false),
+            Action::NewFolder => self.ask_new(true),
+            Action::Rename => {
+                let Some(path) = self.context.clone() else { return };
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let prompt = format!("Rename '{name}' (Enter to confirm, Esc to cancel)");
+                self.modals.push(Modal::Input(InputBox::new(&prompt, &name, "new name", 0, After::Nothing).kind(InputKind::Rename(path))));
+            }
+            Action::Delete => {
+                let Some(path) = self.context.clone() else { return };
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let extra = if path.is_dir() { " and its contents" } else { "" };
+                let (button, detail) = match which("gio") {
+                    Some(_) => ("Move to Trash", "You can restore it from the Trash."),
+                    None => ("Delete", "This cannot be undone."),
+                };
+                self.modals.push(Modal::Choice(Choice::new(
+                    format!("Are you sure you want to delete '{name}'{extra}?"),
+                    detail.to_string(),
+                    vec![button, "Cancel"],
+                    ChoiceThen::Delete,
+                )));
+            }
+            Action::CopyPath(relative) => {
+                let Some(path) = self.context.clone() else { return };
+                let shown = if relative { path.strip_prefix(&self.workspace).unwrap_or(&path) } else { &path };
+                self.clipboard = shown.to_string_lossy().to_string();
+                self.out.push_str(&format!("\x1b]52;c;{}\x07", base64(self.clipboard.as_bytes())));
+            }
+            Action::CloseOthers(keep) => {
+                let ids: Vec<u64> = self.docs.iter().map(|doc| doc.id).filter(|id| *id != keep).collect();
+                for id in ids {
+                    self.close_doc(id);
+                }
+            }
+            Action::CloseAll => {
+                let ids: Vec<u64> = self.docs.iter().map(|doc| doc.id).collect();
+                for id in ids {
+                    self.close_doc(id);
                 }
             }
             Action::FocusNextPart => self.focus_part(1),
