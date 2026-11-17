@@ -58,6 +58,7 @@ pub enum Action {
     Quit,
     Save,
     SaveAs,
+    SaveAll,
     CloseEditor,
     QuickOpen,
     NewFile,
@@ -148,6 +149,7 @@ fn binding(key: &KeyEvent) -> Option<Action> {
         KeyCode::Char(c) if ctrl => match (c.to_ascii_lowercase(), shift || c.is_ascii_uppercase(), alt) {
             ('q', _, false) => Action::Quit,
             ('b', false, true) => Action::ToggleClaude,
+            ('s', false, true) => Action::SaveAll,
             ('p', true, false) => Action::CommandPalette,
             ('e', true, false) => Action::ShowView(View::Explorer),
             ('`', _, false) => Action::FocusTerminal,
@@ -175,6 +177,7 @@ pub const MENUS: &[(&str, &[MenuItem])] = &[
         None,
         item("Save", "Ctrl+S", Action::Save),
         item("Save As...", "", Action::SaveAs),
+        item("Save All", "Ctrl+Alt+S", Action::SaveAll),
         None,
         item("Color Theme...", "", Action::SelectTheme),
         None,
@@ -232,6 +235,7 @@ const COMMANDS: &[(&str, Action)] = &[
     ("File: New Folder...", Action::NewFolder),
     ("File: Save", Action::Save),
     ("File: Save As...", Action::SaveAs),
+    ("File: Save All", Action::SaveAll),
     ("View: Close Editor", Action::CloseEditor),
     ("Go to File...", Action::QuickOpen),
     ("View: Show Explorer", Action::ShowView(View::Explorer)),
@@ -363,7 +367,10 @@ pub enum Drag {
     Claude,
     Select,
     Scrollbar,
+    /// Forwarding the mouse to a program that tracks it.
     Term(usize),
+    /// Selecting text in a terminal.
+    TermSelect(usize),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -589,7 +596,7 @@ impl App {
         match self.drag {
             Some(Drag::Sidebar | Drag::Claude) => return "ew-resize",
             Some(Drag::Panel) => return "ns-resize",
-            Some(Drag::Select) => return "text",
+            Some(Drag::Select | Drag::TermSelect(_)) => return "text",
             _ => {}
         }
         if !self.modals.is_empty() {
@@ -760,6 +767,13 @@ impl App {
         }
         match self.focus {
             Focus::Shell | Focus::Claude => {
+                // Ctrl+C (or Ctrl+Shift+C) with text selected copies it instead of interrupting.
+                let ctrl_c = key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && matches!(key.code, KeyCode::Char('c' | 'C'));
+                if ctrl_c && self.copy_terminal_selection() {
+                    return;
+                }
                 if let Some(terminal) = self.focused_term() {
                     terminal.key(&key);
                 }
@@ -975,6 +989,11 @@ impl App {
                         terminal.send_mouse(32, x, y, false);
                     }
                 }
+                Some(Drag::TermSelect(id)) => {
+                    if let Some(terminal) = self.term(id) {
+                        terminal.select_to(x, y);
+                    }
+                }
                 None => {}
             },
             MouseEventKind::Up(button) => {
@@ -1082,9 +1101,15 @@ impl App {
             }
         } else if let Some(id) = self.term_at(x, y) {
             self.focus = if id == 0 { Focus::Shell } else { Focus::Claude };
-            self.drag = Some(Drag::Term(id));
-            if let Some(terminal) = self.term(id).filter(|t| t.mouse_tracking()) {
+            let Some(terminal) = self.term(id) else { return };
+            // Programs that track the mouse get the click; Shift+drag selects text anyway.
+            if terminal.mouse_tracking() && !shift {
+                terminal.clear_selection();
                 terminal.send_mouse(0, x, y, false);
+                self.drag = Some(Drag::Term(id));
+            } else {
+                terminal.select_start(x, y, shift);
+                self.drag = Some(Drag::TermSelect(id));
             }
         }
     }
@@ -1135,11 +1160,17 @@ impl App {
                 item("Command Palette...", "F1", Action::CommandPalette),
             ]);
         } else if self.term_at(x, y) == Some(0) {
+            self.focus = Focus::Shell;
+            items.extend(self.terminal_edit_items());
             items.extend([
                 item("Restart Terminal", "", Action::RestartTerminal),
                 item("Hide Panel", "Ctrl+J", Action::TogglePanel),
             ]);
         } else if within(self.lay.claude) {
+            if self.term_at(x, y) == Some(1) {
+                self.focus = Focus::Claude;
+                items.extend(self.terminal_edit_items());
+            }
             items.push(item("Switch Agent...", "", Action::AgentMenu));
             if self.claude.is_some() {
                 items.extend([item("New Conversation", "", Action::RestartClaude), item("Stop Agent", "", Action::StopAgent)]);
@@ -1149,6 +1180,35 @@ impl App {
             return;
         }
         self.modals.push(Modal::Menu(Menu::new(items, x, y, false, None)));
+    }
+
+    /// Copy / Paste / Select All for the focused terminal's right-click menu.
+    fn terminal_edit_items(&mut self) -> Vec<MenuItem> {
+        let selected = self.focused_term().map_or(false, |terminal| terminal.has_selection());
+        let mut items = Vec::new();
+        if selected {
+            items.push(item("Copy", "Ctrl+C", Action::Editor(EdCmd::Copy)));
+        }
+        if !self.clipboard.is_empty() {
+            items.push(item("Paste", "Ctrl+Shift+V", Action::Editor(EdCmd::Paste)));
+        }
+        items.extend([item("Select All", "", Action::Editor(EdCmd::SelectAll)), None]);
+        items
+    }
+
+    /// Copy the focused terminal's selection to the clipboard. False when nothing is selected.
+    fn copy_terminal_selection(&mut self) -> bool {
+        let Some(terminal) = self.focused_term() else { return false };
+        let Some(text) = terminal.selected_text() else { return false };
+        terminal.clear_selection();
+        self.set_clipboard(text);
+        true
+    }
+
+    /// Put text on our clipboard and, through the terminal (OSC 52), the system's.
+    fn set_clipboard(&mut self, text: String) {
+        self.out.push_str(&format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
+        self.clipboard = text;
     }
 
     /// Create or rename a file/folder from the name typed into the input box.
@@ -1449,6 +1509,16 @@ impl App {
             After::Nothing => {}
             After::Close => self.remove(id),
             After::Run => self.run_in_terminal(id),
+            After::SaveAll => self.save_next_untitled(),
+        }
+    }
+
+    /// Save All: ask for a name for the next untitled file with changes, one at a time.
+    fn save_next_untitled(&mut self) {
+        let next = self.docs.iter().find(|doc| doc.dirty && doc.is_text() && doc.path.is_none()).map(|doc| doc.id);
+        if let Some(id) = next {
+            self.activate(id, None); // so you can see which file the name is for
+            self.save(id, After::SaveAll, false);
         }
     }
 
@@ -1566,6 +1636,14 @@ impl App {
                 if let Some(id) = self.active {
                     self.save(id, After::Nothing, action == Action::SaveAs);
                 }
+            }
+            Action::SaveAll => {
+                let named: Vec<u64> =
+                    self.docs.iter().filter(|doc| doc.dirty && doc.is_text() && doc.path.is_some()).map(|doc| doc.id).collect();
+                for id in named {
+                    self.write(id, After::Nothing);
+                }
+                self.save_next_untitled();
             }
             Action::CloseEditor => {
                 if let Some(id) = self.active {
@@ -1709,8 +1787,7 @@ impl App {
             Action::CopyPath(relative) => {
                 let Some(path) = self.context.clone() else { return };
                 let shown = if relative { path.strip_prefix(&self.workspace).unwrap_or(&path) } else { &path };
-                self.clipboard = shown.to_string_lossy().to_string();
-                self.out.push_str(&format!("\x1b]52;c;{}\x07", base64(self.clipboard.as_bytes())));
+                self.set_clipboard(shown.to_string_lossy().to_string());
             }
             Action::CloseOthers(keep) => {
                 let ids: Vec<u64> = self.docs.iter().map(|doc| doc.id).filter(|id| *id != keep).collect();
@@ -1728,6 +1805,27 @@ impl App {
             Action::FocusPreviousPart => self.focus_part(-1),
             Action::NextEditor => self.cycle(1),
             Action::PreviousEditor => self.cycle(-1),
+            Action::Editor(command) if matches!(self.focus, Focus::Shell | Focus::Claude) => match command {
+                // With a terminal focused, Copy / Paste / Select All act on the terminal.
+                EdCmd::Copy => {
+                    self.copy_terminal_selection();
+                }
+                EdCmd::Paste => {
+                    let text = self.clipboard.clone();
+                    if let Some(terminal) = self.focused_term().filter(|_| !text.is_empty()) {
+                        terminal.paste(&text);
+                    }
+                }
+                EdCmd::SelectAll => {
+                    if let Some(terminal) = self.focused_term() {
+                        terminal.select_all();
+                    }
+                }
+                _ => {
+                    self.focus = Focus::Editor;
+                    self.run(action);
+                }
+            },
             Action::Editor(command) => {
                 let App { docs, active, clipboard, focus, .. } = self;
                 if let Some(doc) = docs.iter_mut().find(|d| Some(d.id) == *active && d.is_text()) {

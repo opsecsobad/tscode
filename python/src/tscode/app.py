@@ -34,7 +34,7 @@ RUNNERS = {".py": "python3", ".sh": "bash", ".bash": "bash", ".js": "node", ".mj
 # matching app shortcuts are switched off while a terminal has focus.
 TERMINAL_OWNED = {"save", "close_editor", "quick_open", "toggle_sidebar", "toggle_panel", "new_file"}
 KEYBOARD_ACTIONS = TERMINAL_OWNED | {
-    "command_palette", "show_view", "select_theme", "toggle_claude", "focus_terminal",
+    "command_palette", "show_view", "select_theme", "toggle_claude", "focus_terminal", "save_all",
     "focus_next_part", "focus_previous_part", "next_editor", "previous_editor",
 }
 
@@ -54,6 +54,7 @@ class TerminalStudioCode(App):
         Binding("ctrl+b", "toggle_sidebar", "Toggle Side Bar", priority=True),
         Binding("ctrl+j", "toggle_panel", "Toggle Panel", priority=True),
         Binding("ctrl+alt+b", "toggle_claude", "Toggle Claude Code", priority=True),
+        Binding("ctrl+alt+s", "save_all", "Save All", priority=True),
         # Textual only adds its own palette key when no binding names the action, so list F1 here.
         Binding("f1", "command_palette", "Command Palette", priority=True),
         Binding("ctrl+shift+p", "command_palette", "Command Palette", priority=True),
@@ -297,11 +298,15 @@ class TerminalStudioCode(App):
         self.context_menu(items, x, y)
 
     def terminal_menu(self, terminal: Terminal, x: int, y: int) -> None:
+        items: list = [("Copy", "Ctrl+C", "editor('copy')")] if terminal.has_selection else []
+        if self.clipboard:
+            items.append(("Paste", "Ctrl+Shift+V", "editor('paste')"))
+        items += [("Select All", "", "editor('select_all')"), None]
         if terminal is self.claude.terminal:
-            items = [("Switch Agent...", "", "agent_menu"), ("New Conversation", "", "restart_claude"),
+            items += [("Switch Agent...", "", "agent_menu"), ("New Conversation", "", "restart_claude"),
                      ("Stop Agent", "", "stop_agent"), None, ("Hide Agent Panel", "Ctrl+Alt+B", "toggle_claude")]
         else:
-            items = [("Restart Terminal", "", "restart_terminal"), ("Hide Panel", "Ctrl+J", "toggle_panel")]
+            items += [("Restart Terminal", "", "restart_terminal"), ("Hide Panel", "Ctrl+J", "toggle_panel")]
         self.context_menu(items, x, y)
 
     # -- explorer file operations ---------------------------------------------
@@ -471,6 +476,9 @@ class TerminalStudioCode(App):
     def action_save_as(self) -> None:
         self.editors.save(save_as=True)
 
+    def action_save_all(self) -> None:
+        self.editors.save_all()
+
     def action_close_editor(self) -> None:
         self.editors.close()
 
@@ -485,7 +493,18 @@ class TerminalStudioCode(App):
             self.push_screen(CommandPalette(providers=[FileProvider], placeholder="Search files by name"))
 
     def action_editor(self, name: str) -> None:
-        """Run a TextArea action (undo, redo, cut, copy, paste, select_all...) on the active editor."""
+        """Run a TextArea action (undo, redo, cut, copy, paste, select_all...) on the active editor.
+
+        With a terminal focused, Copy / Paste / Select All act on the terminal instead."""
+        terminal = self.screen_stack[0].focused
+        if isinstance(terminal, Terminal) and name in ("copy", "paste", "select_all"):
+            if name == "copy":
+                terminal.copy_selection()
+            elif name == "paste":
+                terminal.paste(self.clipboard)
+            else:
+                terminal.select_all()
+            return
         editor = self.editors.active_editor
         if editor is not None:
             editor.focus()

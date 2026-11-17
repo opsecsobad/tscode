@@ -20,6 +20,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("File: New Folder...", "new_folder"),
     ("File: Save", "save"),
     ("File: Save As...", "save_as"),
+    ("File: Save All", "save_all"),
     ("View: Close Editor", "close_editor"),
     ("Go to File...", "quick_open"),
     ("View: Show Explorer", "show_view('explorer')"),

@@ -169,6 +169,7 @@ DARK_MODERN = VSTheme(
         "terminal.background": "#181818",
         "terminal.foreground": "#cccccc",
         "terminalCursor.foreground": "#cccccc",
+        "terminal.selectionBackground": "#264f78",
         # status bar
         "statusBar.background": "#181818",
         "statusBar.foreground": "#cccccc",
@@ -412,6 +413,7 @@ _FALLBACKS = {
     "terminal.background": "panel.background",
     "terminal.foreground": "foreground",
     "terminalCursor.foreground": "terminal.foreground",
+    "terminal.selectionBackground": "editor.selectionBackground",
     "statusBar.background": "sideBar.background",
     "statusBar.foreground": "foreground",
     "statusBarItem.remoteBackground": "focusBorder",
@@ -439,6 +441,7 @@ _PAINTED_ON = {
     "menu.selectionBackground": "menu.background",
     "statusBarItem.hoverBackground": "statusBar.background",
     "commandCenter.border": "titleBar.activeBackground",
+    "terminal.selectionBackground": "terminal.background",
 }
 _ANSI_KEYS = {
     "black": "Black", "red": "Red", "green": "Green", "brown": "Yellow",
@@ -595,6 +598,8 @@ def complete_colors(given: dict[str, str], dark: bool) -> dict[str, str]:
         out["list.activeSelectionBackground"] = mix(out["sideBar.background"], foreground, 0.16)
     if too_close(out["input.background"], out["sideBar.background"]):
         out["input.background"] = mix(out["sideBar.background"], foreground, 0.09)
+    if too_close(out["terminal.selectionBackground"], out["terminal.background"]):
+        out["terminal.selectionBackground"] = mix(out["terminal.background"], foreground, 0.22)
     if too_close(out["editor.findMatchHighlightBackground"], background):
         out["editor.findMatchHighlightBackground"] = mix(background, foreground, 0.28)
     # A hairline that vanishes into the background would leave the panes unseparated.

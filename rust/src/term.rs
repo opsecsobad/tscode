@@ -14,6 +14,7 @@ use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
+use std::time::Instant;
 
 const SCROLLBACK: usize = 5000;
 
@@ -60,6 +61,19 @@ pub struct Term {
     queued: Vec<u8>,
     /// Where the terminal was last painted (for mouse coordinates).
     pub area: Rect,
+    /// Text selected with the mouse: (anchor, head) as (history line, column), where
+    /// history line 0 is the oldest line in the scrollback. Columns are cell indexes;
+    /// the end of a selection is exclusive.
+    selection: Option<(Spot, Spot)>,
+    last_click: Option<(Instant, Spot, u8)>,
+}
+
+/// A cell position that stays put while the view scrolls: (history line, column).
+type Spot = (usize, u16);
+
+/// Characters that end a word for double-click selection (like VS Code's terminal).
+fn word_char(c: char) -> bool {
+    !c.is_whitespace() && !"()[]{}<>'\"`|,;│─".contains(c)
 }
 
 impl Term {
@@ -79,6 +93,8 @@ impl Term {
             tx,
             queued: Vec::new(),
             area: Rect::default(),
+            selection: None,
+            last_click: None,
         }
     }
 
@@ -93,6 +109,7 @@ impl Term {
         self.parser = vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Replies::default());
         self.exited = false;
         self.generation += 1;
+        self.selection = None;
         if let Err(error) = self.try_spawn(cols, rows) {
             let name = self.command.first().cloned().unwrap_or_default();
             self.exited = true;
@@ -208,6 +225,7 @@ impl Term {
         }
         self.cols = cols;
         self.rows = rows;
+        self.selection = None; // the text reflows, so the old cells no longer mean anything
         if !self.running() {
             if !self.exited {
                 self.spawn();
@@ -255,12 +273,14 @@ impl Term {
             return true;
         }
         let Some(data) = self.translate(key) else { return false };
+        // Typing ends a selection, like in VS Code's terminal.
+        let selected = self.selection.take().is_some();
         let scrolled = self.parser.screen().scrollback() > 0;
         if scrolled {
             self.parser.screen_mut().set_scrollback(0);
         }
         self.write(&data);
-        scrolled
+        scrolled || selected
     }
 
     fn translate(&self, key: &KeyEvent) -> Option<Vec<u8>> {
@@ -344,6 +364,7 @@ impl Term {
     }
 
     pub fn paste(&mut self, text: &str) {
+        self.selection = None;
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         if self.parser.screen().bracketed_paste() {
             self.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
@@ -389,6 +410,126 @@ impl Term {
         self.parser.screen_mut().set_scrollback((current + delta).max(0) as usize);
     }
 
+    // -- selection ------------------------------------------------------------
+
+    /// History line shown on the top row right now.
+    fn top_line(&self) -> usize {
+        let screen = self.parser.screen();
+        screen.scrollback_len().saturating_sub(screen.scrollback())
+    }
+
+    /// The cell under screen position (x, y), clamped into the terminal.
+    fn spot_at(&self, x: i32, y: i32) -> (u16, Spot) {
+        let row = (y - self.area.y).clamp(0, self.rows.max(1) as i32 - 1) as u16;
+        let col = (x - self.area.x).clamp(0, self.cols.max(1) as i32 - 1) as u16;
+        (row, (self.top_line() + row as usize, col))
+    }
+
+    /// The selection as an ordered, end-exclusive range; None when nothing is selected.
+    fn range(&self) -> Option<(Spot, Spot)> {
+        let (anchor, head) = self.selection?;
+        if anchor == head {
+            return None;
+        }
+        let (start, mut end) = if anchor <= head { (anchor, head) } else { (head, anchor) };
+        end.1 = (end.1 + 1).min(self.cols);
+        Some((start, end))
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.range().is_some()
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// Left button pressed at (x, y): start a selection. A second click on the same cell
+    /// selects the word there, a third the whole row. `extend` (Shift) moves the far end.
+    pub fn select_start(&mut self, x: i32, y: i32, extend: bool) {
+        let (row, spot) = self.spot_at(x, y);
+        if let (true, Some((anchor, _))) = (extend, self.selection) {
+            self.selection = Some((anchor, spot));
+            return;
+        }
+        let now = Instant::now();
+        let clicks = match self.last_click {
+            Some((at, last, count)) if last == spot && now.duration_since(at).as_millis() < 400 => count % 3 + 1,
+            _ => 1,
+        };
+        self.last_click = Some((now, spot, clicks));
+        let screen = self.parser.screen();
+        let is_word = |col: u16| {
+            screen.cell(row, col).map_or(false, |cell| cell.contents().chars().next().map_or(false, word_char))
+        };
+        self.selection = Some(match clicks {
+            2 if is_word(spot.1) => {
+                let (mut start, mut end) = (spot.1, spot.1);
+                while start > 0 && is_word(start - 1) {
+                    start -= 1;
+                }
+                while end + 1 < self.cols && is_word(end + 1) {
+                    end += 1;
+                }
+                ((spot.0, start), (spot.0, end))
+            }
+            3 => ((spot.0, 0), (spot.0, self.cols.saturating_sub(1))),
+            _ => (spot, spot),
+        });
+    }
+
+    /// The mouse moved with the button down: move the far end, scrolling at the edges.
+    pub fn select_to(&mut self, x: i32, y: i32) {
+        if y < self.area.y {
+            self.scroll_by(1);
+        } else if y >= self.area.bottom() {
+            self.scroll_by(-1);
+        }
+        let (_, spot) = self.spot_at(x, y);
+        if let Some((anchor, _)) = self.selection {
+            self.selection = Some((anchor, spot));
+        }
+    }
+
+    /// Select everything: the scrollback and the screen.
+    pub fn select_all(&mut self) {
+        let last = self.parser.screen().scrollback_len() + self.rows.max(1) as usize - 1;
+        self.selection = Some(((0, 0), (last, self.cols.saturating_sub(1))));
+    }
+
+    /// The selected text, with wrapped rows joined back into one line.
+    pub fn selected_text(&mut self) -> Option<String> {
+        let (start, mut end) = self.range()?;
+        let rows = self.rows.max(1) as usize;
+        let cols = self.cols;
+        let screen = self.parser.screen_mut();
+        let saved = screen.scrollback();
+        let len = screen.scrollback_len();
+        // Lines that fell out of the scrollback since the selection was made are gone.
+        if end.0 >= len + rows {
+            end = (len + rows - 1, cols);
+        }
+        let mut text = String::new();
+        let mut line = start.0;
+        // vt100 only reads what is on screen, so walk the selection a screenful at a time.
+        while line <= end.0 {
+            let last = (line + rows - 1).min(end.0);
+            screen.set_scrollback(len.saturating_sub(line));
+            let top = len - screen.scrollback();
+            let (r0, r1) = ((line - top) as u16, (last - top) as u16);
+            let c0 = if line == start.0 { start.1 } else { 0 };
+            let c1 = if last == end.0 { end.1 } else { cols };
+            text.push_str(&screen.contents_between(r0, c0, r1, c1));
+            if last < end.0 && !screen.row_wrapped(r1) {
+                text.push('\n');
+            }
+            line = last + 1;
+        }
+        screen.set_scrollback(saved);
+        let text = text.trim_end_matches('\n').to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
     // -- painting -------------------------------------------------------------
 
     /// Paint the screen into `area`. Returns where the process's cursor is, if it should show.
@@ -404,6 +545,9 @@ impl Term {
             vt100::Color::Rgb(r, g, b) => Rgb(r, g, b),
         };
         let (rows, cols) = (self.rows.min(area.h as u16), self.cols.min(area.w as u16));
+        let selected = self.range();
+        let selection_bg = theme.c("terminal.selectionBackground");
+        let top = screen.scrollback_len().saturating_sub(screen.scrollback());
         for row in 0..rows {
             for col in 0..cols {
                 let Some(cell) = screen.cell(row, col) else { continue };
@@ -413,6 +557,12 @@ impl Term {
                 let (mut fg, mut bg) = (resolve(cell.fgcolor(), default_fg), resolve(cell.bgcolor(), default_bg));
                 if cell.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
+                }
+                if let Some((start, end)) = selected {
+                    let spot = (top + row as usize, col);
+                    if spot >= start && spot < end {
+                        bg = selection_bg;
+                    }
                 }
                 let mut attr = 0;
                 for (on, bit) in [(cell.bold(), BOLD), (cell.dim(), DIM), (cell.italic(), ITALIC), (cell.underline(), UNDERLINE)] {
@@ -472,5 +622,79 @@ fn indexed(theme: &VSTheme, index: u8) -> Rgb {
             let gray = 8 + (index - 232) * 10;
             Rgb(gray, gray, gray)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A terminal with no process, showing `text` in a `cols` x `rows` area at (10, 5).
+    fn term(cols: u16, rows: u16, text: &str) -> Term {
+        let (tx, _rx) = channel();
+        let mut term = Term::new(0, vec![], PathBuf::from("/"), tx);
+        term.cols = cols;
+        term.rows = rows;
+        term.parser = vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Replies::default());
+        term.area = Rect::new(10, 5, cols as i32, rows as i32);
+        term.feed(0, text.as_bytes());
+        term
+    }
+
+    #[test]
+    fn drag_selects_across_rows() {
+        let mut t = term(20, 4, "hello world\r\nsecond line");
+        t.select_start(16, 5, false); // the "w" of world
+        t.select_to(15, 6); // through "second"
+        assert_eq!(t.selected_text().as_deref(), Some("world\nsecond"));
+    }
+
+    #[test]
+    fn click_without_drag_selects_nothing() {
+        let mut t = term(20, 4, "hello");
+        t.select_start(11, 5, false);
+        assert!(!t.has_selection());
+        assert_eq!(t.selected_text(), None);
+    }
+
+    #[test]
+    fn double_click_selects_a_word() {
+        let mut t = term(30, 4, "cargo build --release");
+        t.select_start(17, 5, false);
+        t.select_start(17, 5, false);
+        assert_eq!(t.selected_text().as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn wrapped_rows_copy_as_one_line() {
+        let mut t = term(10, 4, "abcdefghijklmno");
+        t.select_all();
+        assert_eq!(t.selected_text().as_deref(), Some("abcdefghijklmno"));
+    }
+
+    #[test]
+    fn select_all_reaches_into_the_scrollback() {
+        let lines: Vec<String> = (1..=12).map(|n| format!("line {n}")).collect();
+        let mut t = term(20, 4, &lines.join("\r\n"));
+        t.select_all();
+        assert_eq!(t.selected_text().unwrap(), lines.join("\n"));
+        assert_eq!(t.parser.screen().scrollback(), 0, "the view goes back to where it was");
+    }
+
+    #[test]
+    fn selection_follows_its_text_as_output_scrolls() {
+        let mut t = term(20, 3, "first\r\nsecond");
+        t.select_start(10, 5, false);
+        t.select_to(14, 5); // "first"
+        t.feed(0, b"\r\nthree\r\nfour\r\nfive");
+        assert_eq!(t.selected_text().as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn typing_clears_the_selection() {
+        let mut t = term(20, 4, "hello");
+        t.select_all();
+        t.key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(!t.has_selection());
     }
 }

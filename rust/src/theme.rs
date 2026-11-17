@@ -281,6 +281,10 @@ fn complete_colors(given: &Map<String, Value>, dark: bool) -> Option<HashMap<Str
     if too_close(&out["input.background"], &side) {
         out.insert("input.background".into(), mix(&side, &foreground, 0.09)?);
     }
+    let terminal = out["terminal.background"].clone();
+    if too_close(&out["terminal.selectionBackground"], &terminal) {
+        out.insert("terminal.selectionBackground".into(), mix(&terminal, &foreground, 0.22)?);
+    }
     if too_close(&out["editor.findMatchHighlightBackground"], &background) {
         out.insert("editor.findMatchHighlightBackground".into(), shade(0.28)?);
     }

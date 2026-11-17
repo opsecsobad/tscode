@@ -264,6 +264,8 @@ pub enum After {
     Nothing,
     Close,
     Run,
+    /// Carry on with Save All (the next untitled file).
+    SaveAll,
 }
 
 /// A quick-input box at the top of the window (like VS Code's Save As prompt).

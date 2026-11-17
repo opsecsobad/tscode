@@ -18,6 +18,7 @@ import struct
 import subprocess
 import sys
 import termios
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -93,6 +94,9 @@ _MODIFIERS = {"shift": 2, "alt": 3, "ctrl": 5, "ctrl+shift": 6}
 # Keys the terminal never swallows, so the app can always be driven from inside it.
 PASSTHROUGH = {"f1", "f6", "shift+f6", "ctrl+q", "ctrl+grave_accent"}
 
+# Characters that end a word for double-click selection (like VS Code's terminal).
+_WORD_BREAKS = set(" \t()[]{}<>'\"`|,;│─")
+
 
 class _Screen(pyte.HistoryScreen):
     """pyte screen + alternate-screen support + replies routed to the pty."""
@@ -102,6 +106,21 @@ class _Screen(pyte.HistoryScreen):
         self.in_alt = False
         self._saved = None
         self._on_reply = on_reply
+        self._drawing = False
+
+    def draw(self, data: str) -> None:
+        self._drawing = True
+        try:
+            super().draw(data)
+        finally:
+            self._drawing = False
+
+    def linefeed(self) -> None:
+        # Mark rows that ran past the right edge (autowrap happens inside draw), so a
+        # copied selection joins them back into one line. A newline the program sent
+        # clears the mark when the row is reused.
+        self.buffer[self.cursor.y].wrapped = self._drawing
+        super().linefeed()
 
     def write_process_input(self, data: str) -> None:
         self._on_reply(data)
@@ -136,6 +155,8 @@ class _Screen(pyte.HistoryScreen):
 class Terminal(Widget, can_focus=True):
     """A pty-backed terminal. Spawns `command` the first time it gets a size."""
 
+    ALLOW_SELECT = False  # selection is our own (it has to reach into the scrollback)
+
     class Exited(Message):
         def __init__(self, terminal: "Terminal") -> None:
             super().__init__()
@@ -166,6 +187,11 @@ class Terminal(Widget, can_focus=True):
         self._out = b""
         self._scroll = 0  # lines scrolled back into history
         self.exited = False
+        # Mouse selection: (anchor, head) as (history line, column), where history line 0
+        # is the oldest line in the scrollback. The end of a selection is inclusive here.
+        self._selection: tuple[tuple[int, int], tuple[int, int]] | None = None
+        self._selecting = False
+        self._last_click: tuple[float, tuple[int, int], int] | None = None
 
     # -- process -----------------------------------------------------------
 
@@ -179,6 +205,7 @@ class Terminal(Widget, can_focus=True):
         self._stream = pyte.Stream(self._screen)
         self._decoder.reset()
         self._carry, self._scroll, self.exited = "", 0, False
+        self._selection = None
         env = {**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor", **self.extra_env}
         env.pop("COLUMNS", None)
         env.pop("LINES", None)
@@ -321,6 +348,7 @@ class Terminal(Widget, can_focus=True):
         self._screen.resize(rows, cols)
         self._set_winsize(rows, cols)
         self._scroll = 0
+        self._selection = None  # the text reflows, so the old cells no longer mean anything
         self.refresh()
 
     def on_focus(self) -> None:
@@ -339,11 +367,17 @@ class Terminal(Widget, can_focus=True):
             if key == "enter":
                 self.restart()
             return
+        # Ctrl+C (or Ctrl+Shift+C) with text selected copies it instead of interrupting.
+        if key in ("ctrl+c", "ctrl+shift+c") and self.copy_selection():
+            return
         if key in ("shift+pageup", "shift+pagedown"):
             self._scroll_by(self.size.height - 1 if key == "shift+pageup" else 1 - self.size.height)
             return
         data = self._translate(key, event.character)
         if data:
+            if self._selection is not None:  # typing ends a selection, like in VS Code
+                self._selection = None
+                self.refresh()
             if self._scroll:
                 self._scroll = 0
                 self.refresh()
@@ -368,7 +402,15 @@ class Terminal(Widget, can_focus=True):
 
     def on_paste(self, event: events.Paste) -> None:
         event.stop()
-        text = event.text.replace("\r\n", "\r").replace("\n", "\r")
+        self.paste(event.text)
+
+    def paste(self, text: str) -> None:
+        if not text:
+            return
+        if self._selection is not None:
+            self._selection = None
+            self.refresh()
+        text = text.replace("\r\n", "\r").replace("\n", "\r")
         if self._screen.has_mode(2004):
             text = f"\x1b[200~{text}\x1b[201~"
         self.write(text)
@@ -387,15 +429,25 @@ class Terminal(Widget, can_focus=True):
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         self.focus()
-        if self._mouse_tracking():
+        # Programs that track the mouse get the click; Shift+drag selects text anyway.
+        if self._mouse_tracking() and not event.shift:
             self._send_mouse({1: 0, 2: 1, 3: 2}.get(event.button, 0), event.x, event.y)
+        elif event.button == 1:
+            self._select_start(event.x, event.y, extend=event.shift)
+            self._selecting = True
+            self.capture_mouse()
 
     def on_mouse_up(self, event: events.MouseUp) -> None:
-        if self._mouse_tracking():
+        if self._selecting:
+            self._selecting = False
+            self.release_mouse()
+        elif self._mouse_tracking():
             self._send_mouse({1: 0, 2: 1, 3: 2}.get(event.button, 0), event.x, event.y, release=True)
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        if event.button and self._mouse_tracking() and (
+        if self._selecting:
+            self._select_to(event.x, event.y)
+        elif event.button and self._mouse_tracking() and (
             self._screen.has_mode(1002) or self._screen.has_mode(1003)
         ):
             self._send_mouse(32 + {1: 0, 2: 1, 3: 2}.get(event.button, 0), event.x, event.y)
@@ -422,6 +474,115 @@ class Terminal(Widget, can_focus=True):
         if new != self._scroll:
             self._scroll = new
             self.refresh()
+
+    # -- selection ------------------------------------------------------------
+
+    def _top_line(self) -> int:
+        """History line shown on the top row right now."""
+        return len(self._screen.history.top) - self._scroll
+
+    def _line(self, index: int):
+        history = self._screen.history.top
+        return history[index] if index < len(history) else self._screen.buffer[index - len(history)]
+
+    def _spot_at(self, x: int, y: int) -> tuple[int, int]:
+        """The cell under widget position (x, y), clamped into the terminal."""
+        row = max(0, min(self._screen.lines - 1, y))
+        col = max(0, min(self._screen.columns - 1, x))
+        return self._top_line() + row, col
+
+    def _range(self) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        """The selection as an ordered, end-exclusive range; None when nothing is selected."""
+        if self._selection is None or self._selection[0] == self._selection[1]:
+            return None
+        start, end = sorted(self._selection)
+        return start, (end[0], min(end[1] + 1, self._screen.columns))
+
+    @property
+    def has_selection(self) -> bool:
+        return self._range() is not None
+
+    def clear_selection(self) -> None:
+        if self._selection is not None:
+            self._selection = None
+            self.refresh()
+
+    def _select_start(self, x: int, y: int, extend: bool = False) -> None:
+        """Left button pressed: start a selection. A second click on the same cell selects
+        the word there, a third the whole row. `extend` (Shift) moves the far end."""
+        spot = self._spot_at(x, y)
+        if extend and self._selection is not None:
+            self._selection = (self._selection[0], spot)
+            self.refresh()
+            return
+        now = time.monotonic()
+        last = self._last_click
+        clicks = last[2] % 3 + 1 if last and last[1] == spot and now - last[0] < 0.4 else 1
+        self._last_click = (now, spot, clicks)
+        line, col = spot
+        cells = self._line(line)
+
+        def is_word(c: int) -> bool:
+            data = cells[c].data
+            return bool(data) and data[0] not in _WORD_BREAKS
+
+        if clicks == 2 and is_word(col):
+            start = end = col
+            while start > 0 and (is_word(start - 1) or cells[start - 1].data == ""):
+                start -= 1
+            while end + 1 < self._screen.columns and (is_word(end + 1) or cells[end + 1].data == ""):
+                end += 1
+            self._selection = ((line, start), (line, end))
+        elif clicks == 3:
+            self._selection = ((line, 0), (line, self._screen.columns - 1))
+        else:
+            self._selection = (spot, spot)
+        self.refresh()
+
+    def _select_to(self, x: int, y: int) -> None:
+        """The mouse moved with the button down: move the far end, scrolling at the edges."""
+        if y < 0:
+            self._scroll_by(1)
+        elif y >= self.size.height:
+            self._scroll_by(-1)
+        if self._selection is not None:
+            self._selection = (self._selection[0], self._spot_at(x, y))
+            self.refresh()
+
+    def select_all(self) -> None:
+        """Select everything: the scrollback and the screen."""
+        last = len(self._screen.history.top) + self._screen.lines - 1
+        self._selection = ((0, 0), (last, self._screen.columns - 1))
+        self.refresh()
+
+    def selected_text(self) -> str | None:
+        """The selected text, with wrapped rows joined back into one line."""
+        span = self._range()
+        if span is None:
+            return None
+        (first, start_col), (last, end_col) = span
+        final = len(self._screen.history.top) + self._screen.lines - 1
+        if last > final:  # rows that are gone since the selection was made
+            last, end_col = final, self._screen.columns
+        parts: list[str] = []
+        for index in range(first, last + 1):
+            cells = self._line(index)
+            lo = start_col if index == first else 0
+            hi = end_col if index == last else self._screen.columns
+            text = "".join(cells[c].data for c in range(lo, hi))
+            wrapped = getattr(cells, "wrapped", False) and index < last
+            parts.append(text if wrapped else text.rstrip() + ("\n" if index < last else ""))
+        text = "".join(parts).rstrip("\n")
+        return text or None
+
+    def copy_selection(self) -> bool:
+        """Copy the selection to the clipboard and clear it. False when nothing is selected."""
+        text = self.selected_text()
+        if text is None:
+            return False
+        self.app.copy_to_clipboard(text)
+        self.clear_selection()
+        return True
 
     @property
     def cursor_screen_offset(self):
@@ -458,6 +619,14 @@ class Terminal(Widget, can_focus=True):
         run: list[str] = []
         run_key = None
         focused = self.has_focus
+        span = self._range()
+        sel_from = sel_to = -1  # columns of this row inside the selection
+        if span is not None:
+            (first, start_col), (last, end_col) = span
+            index = self._top_line() + y
+            if first <= index <= last:
+                sel_from = start_col if index == first else 0
+                sel_to = end_col if index == last else screen.columns
         if focused and getattr(self.app, "cursor_line", False):
             cursor_x = -1  # line-cursor mode: the app shows the terminal's real bar cursor here
         for x in range(min(width, screen.columns)):
@@ -468,6 +637,7 @@ class Terminal(Widget, can_focus=True):
                 char.fg, char.bg, char.bold, char.italics, char.underscore,
                 char.strikethrough, char.reverse,
                 (2 if focused else 1) if x == cursor_x else 0,
+                sel_from <= x < sel_to,
             )
             if key != run_key:
                 if run:
@@ -477,7 +647,7 @@ class Terminal(Widget, can_focus=True):
         if run:
             segments.append(Segment("".join(run), _style(theme, *run_key)))
         strip = Strip(segments)
-        return strip.adjust_cell_length(width, _style(theme, "default", "default", *(False,) * 5, 0))
+        return strip.adjust_cell_length(width, _style(theme, "default", "default", *(False,) * 5, 0, False))
 
 
 def _resolve(theme: VSTheme, name: str, default: str) -> str:
@@ -495,11 +665,13 @@ def _resolve(theme: VSTheme, name: str, default: str) -> str:
 
 
 @lru_cache(maxsize=4096)
-def _style(theme, fg, bg, bold, italics, underscore, strikethrough, reverse, cursor) -> Style:
+def _style(theme, fg, bg, bold, italics, underscore, strikethrough, reverse, cursor, selected) -> Style:
     color = _resolve(theme, fg, theme["terminal.foreground"])
     bgcolor = _resolve(theme, bg, theme["terminal.background"])
     if reverse:
         color, bgcolor = bgcolor, color
+    if selected:
+        bgcolor = theme["terminal.selectionBackground"]
     if cursor == 2:  # focused: solid block
         color, bgcolor = theme["terminal.background"], theme["terminalCursor.foreground"]
     elif cursor == 1:  # unfocused: dim block

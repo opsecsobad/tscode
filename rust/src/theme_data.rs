@@ -47,6 +47,7 @@ pub const DM_COLORS: &[(&str, &str)] = &[
     ("terminal.background", "#181818"),
     ("terminal.foreground", "#cccccc"),
     ("terminalCursor.foreground", "#cccccc"),
+    ("terminal.selectionBackground", "#264f78"),
     ("statusBar.background", "#181818"),
     ("statusBar.foreground", "#cccccc"),
     ("statusBarItem.remoteBackground", "#0078d4"),
@@ -240,6 +241,7 @@ pub const FALLBACKS: &[(&str, &str)] = &[
     ("terminal.background", "panel.background"),
     ("terminal.foreground", "foreground"),
     ("terminalCursor.foreground", "terminal.foreground"),
+    ("terminal.selectionBackground", "editor.selectionBackground"),
     ("statusBar.background", "sideBar.background"),
     ("statusBar.foreground", "foreground"),
     ("statusBarItem.remoteBackground", "focusBorder"),
@@ -268,6 +270,7 @@ pub const PAINTED_ON: &[(&str, &str)] = &[
     ("menu.selectionBackground", "menu.background"),
     ("statusBarItem.hoverBackground", "statusBar.background"),
     ("commandCenter.border", "titleBar.activeBackground"),
+    ("terminal.selectionBackground", "terminal.background"),
 ];
 
 /// tree-sitter capture -> TextMate scopes to try, most specific first.

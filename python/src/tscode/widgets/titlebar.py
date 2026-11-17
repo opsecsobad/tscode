@@ -18,6 +18,7 @@ MENUS: dict[str, list[tuple[str, str, str] | None]] = {
         None,
         ("Save", "Ctrl+S", "save"),
         ("Save As...", "", "save_as"),
+        ("Save All", "Ctrl+Alt+S", "save_all"),
         None,
         ("Color Theme...", "", "select_theme"),
         None,

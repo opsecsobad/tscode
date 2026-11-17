@@ -442,6 +442,19 @@ class EditorArea(Vertical):
         else:
             self._write(doc, then)
 
+    def save_all(self) -> None:
+        """Save every file with changes. Untitled ones ask for a name, one at a time."""
+        for doc in self.dirty_docs():
+            if doc.path is not None:
+                self._write(doc)
+        self._save_next_untitled()
+
+    def _save_next_untitled(self) -> None:
+        doc = next((d for d in self.dirty_docs() if d.path is None), None)
+        if doc is not None:
+            self.activate(doc.id)  # so you can see which file the name is for
+            self.save(doc, then=self._save_next_untitled)
+
     def _write(self, doc: CodeEditor, then=None) -> None:
         try:
             doc.write_to_disk()
