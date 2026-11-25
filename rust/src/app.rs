@@ -3,7 +3,8 @@
 //! Everything the user can do is an `Action`. Menus, palette commands, key bindings
 //! and clickable icons all name one, and `App::run` carries it out.
 
-use crate::editor::{Doc, EdCmd, MAX_FILE_BYTES, SCROLLBAR_W};
+use crate::completion::{self, Suggest};
+use crate::editor::{Doc, EdCmd, Pos, MAX_FILE_BYTES, SCROLLBAR_W};
 use crate::highlight::{spawn_checker, spawn_highlighter, DiagRequest, DiagResult, HlRequest, HlResult};
 use crate::popups::{After, Choice, ChoiceThen, InputBox, InputKind, Menu, MenuItem, MenuOutcome, Modal, Palette, PaletteOutcome, PickOutcome, QuickPick, Target};
 use crate::screen::Rect;
@@ -77,6 +78,8 @@ pub enum Action {
     NextEditor,
     PreviousEditor,
     Editor(EdCmd),
+    /// Open the suggest widget at the cursor (Ctrl+Space).
+    TriggerSuggest,
     RunFile,
     About,
     RefreshExplorer,
@@ -131,7 +134,13 @@ fn agent_command(index: usize) -> Option<Vec<String>> {
 fn terminal_owned(action: Action) -> bool {
     matches!(
         action,
-        Action::Save | Action::CloseEditor | Action::QuickOpen | Action::ToggleSidebar | Action::TogglePanel | Action::NewFile
+        Action::Save
+            | Action::CloseEditor
+            | Action::QuickOpen
+            | Action::ToggleSidebar
+            | Action::TogglePanel
+            | Action::NewFile
+            | Action::TriggerSuggest
     )
 }
 
@@ -146,6 +155,8 @@ fn binding(key: &KeyEvent) -> Option<Action> {
         KeyCode::F(6) => Action::FocusNextPart,
         KeyCode::PageDown if ctrl => Action::NextEditor,
         KeyCode::PageUp if ctrl => Action::PreviousEditor,
+        // Ctrl+Space arrives as NUL in terminals without the kitty keyboard protocol.
+        KeyCode::Null => Action::TriggerSuggest,
         KeyCode::Char(c) if ctrl => match (c.to_ascii_lowercase(), shift || c.is_ascii_uppercase(), alt) {
             ('q', _, false) => Action::Quit,
             ('b', false, true) => Action::ToggleClaude,
@@ -153,6 +164,7 @@ fn binding(key: &KeyEvent) -> Option<Action> {
             ('p', true, false) => Action::CommandPalette,
             ('e', true, false) => Action::ShowView(View::Explorer),
             ('`', _, false) => Action::FocusTerminal,
+            (' ', _, false) => Action::TriggerSuggest,
             ('s', false, false) => Action::Save,
             ('w', false, false) => Action::CloseEditor,
             ('p', false, false) => Action::QuickOpen,
@@ -238,6 +250,7 @@ const COMMANDS: &[(&str, Action)] = &[
     ("File: Save All", Action::SaveAll),
     ("View: Close Editor", Action::CloseEditor),
     ("Go to File...", Action::QuickOpen),
+    ("Trigger Suggest", Action::TriggerSuggest),
     ("View: Show Explorer", Action::ShowView(View::Explorer)),
     ("View: Show Search", Action::ShowView(View::Search)),
     ("View: Show Source Control", Action::ShowView(View::Scm)),
@@ -449,6 +462,10 @@ pub struct App {
     /// Mouse pointer shape last sent to the terminal.
     shape: &'static str,
     pub modals: Vec<Modal>,
+    /// The suggest widget (code completion), when open.
+    pub suggest: Option<Suggest>,
+    /// The word whose suggestions were dismissed with Esc: (doc, row, start column).
+    suggest_dismissed: Option<(u64, usize, usize)>,
     pub toasts: Vec<Toast>,
     clipboard: String,
     files: Vec<String>,
@@ -510,6 +527,8 @@ impl App {
             context: None,
             shape: "default",
             modals: Vec::new(),
+            suggest: None,
+            suggest_dismissed: None,
             toasts: Vec::new(),
             clipboard: String::new(),
             files: Vec::new(),
@@ -601,6 +620,8 @@ impl App {
         }
         if !self.modals.is_empty() {
             "default"
+        } else if self.suggest.as_ref().map_or(false, |s| s.contains(x, y)) {
+            "pointer"
         } else if within(self.lay.sidebar_split) || within(self.lay.claude_split) {
             "ew-resize"
         } else if within(self.lay.panel_split) {
@@ -779,10 +800,17 @@ impl App {
                 }
             }
             Focus::Editor => {
-                let App { docs, active, clipboard, .. } = self;
-                if let Some(doc) = docs.iter_mut().find(|d| Some(d.id) == *active && d.is_text()) {
-                    doc.key(&key, clipboard);
+                if self.suggest_key(&key) {
+                    return;
                 }
+                let App { docs, active, clipboard, .. } = self;
+                let mut edited = false;
+                if let Some(doc) = docs.iter_mut().find(|d| Some(d.id) == *active && d.is_text()) {
+                    let version = doc.version;
+                    doc.key(&key, clipboard);
+                    edited = doc.version != version;
+                }
+                self.suggest_after_key(&key, edited);
             }
             Focus::Explorer => {
                 if let Some(path) = self.explorer.key(&key) {
@@ -922,6 +950,7 @@ impl App {
                     }
                 }
                 Focus::Editor => {
+                    self.suggest = None;
                     if let Some(doc) = self.active_editor() {
                         doc.insert(text);
                     }
@@ -930,6 +959,172 @@ impl App {
                 _ => {}
             },
         }
+    }
+
+    // -- code completion (the suggest widget) ---------------------------------------
+
+    /// Keys the open suggest widget takes for itself. True if the key was used.
+    fn suggest_key(&mut self, key: &KeyEvent) -> bool {
+        let Some(suggest) = self.suggest.as_mut() else { return false };
+        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return false;
+        }
+        match key.code {
+            KeyCode::Up => suggest.step(-1),
+            KeyCode::Down => suggest.step(1),
+            KeyCode::PageUp => suggest.step(-suggest.page()),
+            KeyCode::PageDown => suggest.step(suggest.page()),
+            KeyCode::Enter | KeyCode::Tab if !key.modifiers.contains(KeyModifiers::SHIFT) => self.accept_suggest(),
+            KeyCode::Esc => {
+                // Stay quiet for the rest of this word, like VS Code.
+                self.suggest_dismissed = Some((suggest.doc, suggest.row, suggest.start));
+                self.suggest = None;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// After a key reached the editor: narrow, open or close the widget.
+    fn suggest_after_key(&mut self, key: &KeyEvent, edited: bool) {
+        let typed = match key.code {
+            KeyCode::Char(c) if edited && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => Some(c),
+            _ => None,
+        };
+        let Some((language, before)) = self.active_doc().filter(|d| d.is_text()).map(|doc| {
+            let line = &doc.lines[doc.cursor.row];
+            (doc.language, line.chars().take(doc.cursor.col).collect::<String>())
+        }) else {
+            self.suggest = None;
+            return;
+        };
+        match typed {
+            Some(c) if completion::is_word(c, completion::word_extra(language)) => {
+                if self.suggest.is_some() {
+                    self.refilter_suggest();
+                } else {
+                    self.open_suggest(false);
+                }
+            }
+            Some(_) if completion::is_trigger(language, &before) => {
+                self.suggest = None;
+                self.open_suggest(false);
+            }
+            None if edited && matches!(key.code, KeyCode::Backspace | KeyCode::Delete) && self.suggest.is_some() => {
+                self.refilter_suggest();
+            }
+            _ => self.suggest = None,
+        }
+    }
+
+    /// Open the widget at the cursor. `manual` = Ctrl+Space: no quiet zones, empty word allowed.
+    fn open_suggest(&mut self, manual: bool) {
+        self.suggest = None;
+        let Some(doc) = self.active_doc().filter(|d| d.is_text() && d.selection().is_none()) else { return };
+        let (row, col) = (doc.cursor.row, doc.cursor.col);
+        let language = doc.language;
+        let line = &doc.lines[row];
+        let extra = completion::word_extra(language);
+        let start = completion::word_start(line, col, extra);
+        let typed: String = line.chars().skip(start).take(col - start).collect();
+        let before: String = line.chars().take(start).collect();
+        let triggered = typed.is_empty() && completion::is_trigger(language, &before);
+        if !manual {
+            let leading = typed.chars().next();
+            let wordish = typed.chars().any(char::is_alphabetic) || typed.chars().all(|c| "$@#".contains(c)) && !typed.is_empty();
+            if !completion::auto_suggest(language)
+                || completion::quiet_at(doc, row, start)
+                || leading.map_or(false, |c| c.is_ascii_digit())
+                || !(triggered || wordish)
+                || self.suggest_dismissed == Some((doc.id, row, start))
+            {
+                return;
+            }
+        }
+        let others: Vec<&[String]> = self
+            .docs
+            .iter()
+            .filter(|d| d.id != doc.id && d.is_text() && d.language == language)
+            .map(|d| d.lines.as_slice())
+            .collect();
+        let items = completion::candidates(&completion::Context { language, lines: &doc.lines, row, start, others });
+        let mut suggest = Suggest::new(doc.id, row, start, manual || triggered, items);
+        suggest.ignore_case = completion::ignore_case(language);
+        if suggest.filter(&typed) {
+            self.suggest = Some(suggest);
+        }
+    }
+
+    /// The word under the cursor changed: filter again, or close when it no longer applies.
+    fn refilter_suggest(&mut self) {
+        let Some(suggest) = self.suggest.as_mut() else { return };
+        let Some(doc) = self.docs.iter().find(|d| d.id == suggest.doc && Some(d.id) == self.active) else {
+            self.suggest = None;
+            return;
+        };
+        let extra = completion::word_extra(doc.language);
+        let line = &doc.lines[doc.cursor.row];
+        let typed: String = line.chars().skip(suggest.start).take(doc.cursor.col.saturating_sub(suggest.start)).collect();
+        let still_here = doc.cursor.row == suggest.row
+            && doc.cursor.col >= suggest.start
+            && doc.selection().is_none()
+            && typed.chars().all(|c| completion::is_word(c, extra))
+            && (suggest.explicit || !typed.is_empty());
+        if !still_here || !suggest.filter(&typed) {
+            self.suggest = None;
+        }
+    }
+
+    /// Insert the highlighted suggestion.
+    fn accept_suggest(&mut self) {
+        let Some(suggest) = self.suggest.take() else { return };
+        let Some(item) = suggest.current().cloned() else { return };
+        let active = self.active;
+        let Some(doc) = self.docs.iter_mut().find(|d| d.id == suggest.doc && Some(d.id) == active) else { return };
+        if doc.cursor.row != suggest.row || doc.cursor.col < suggest.start {
+            return;
+        }
+        let line = &doc.lines[doc.cursor.row];
+        let typed: String = line.chars().skip(suggest.start).take(doc.cursor.col - suggest.start).collect();
+        let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let (text, select) = completion::insert_text(&item, &typed, &indent, completion::ignore_case(doc.language));
+        doc.complete(suggest.start, &text, select);
+    }
+
+    /// Clicks and the wheel over the widget; any other click closes it. True if used.
+    fn suggest_mouse(&mut self, kind: MouseEventKind, x: i32, y: i32) -> bool {
+        let Some(suggest) = self.suggest.as_mut() else { return false };
+        if suggest.contains(x, y) {
+            match kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(row) = suggest.row_at(x, y) {
+                        suggest.selected = row;
+                        self.accept_suggest();
+                    }
+                }
+                MouseEventKind::ScrollUp => suggest.scroll(-1),
+                MouseEventKind::ScrollDown => suggest.scroll(1),
+                _ => {}
+            }
+            return true;
+        }
+        if matches!(kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+            self.suggest = None;
+        }
+        false
+    }
+
+    /// Where the widget hangs: under the start of the word being completed.
+    pub fn suggest_anchor(&self) -> Option<(i32, i32)> {
+        let suggest = self.suggest.as_ref()?;
+        if self.focus != Focus::Editor || !self.modals.is_empty() || self.active != Some(suggest.doc) {
+            return None;
+        }
+        let doc = self.active_doc()?;
+        if doc.cursor.row != suggest.row || doc.cursor.col < suggest.start {
+            return None;
+        }
+        doc.screen_pos(Pos { row: suggest.row, col: suggest.start })
     }
 
     // -- mouse --------------------------------------------------------------------
@@ -943,6 +1138,9 @@ impl App {
         self.mouse = (x, y);
         if !self.modals.is_empty() {
             self.modal_mouse(mouse.kind, x, y);
+            return;
+        }
+        if self.suggest_mouse(mouse.kind, x, y) {
             return;
         }
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
@@ -1826,7 +2024,13 @@ impl App {
                     self.run(action);
                 }
             },
+            Action::TriggerSuggest => {
+                if self.focus == Focus::Editor {
+                    self.open_suggest(true);
+                }
+            }
             Action::Editor(command) => {
+                self.suggest = None;
                 let App { docs, active, clipboard, focus, .. } = self;
                 if let Some(doc) = docs.iter_mut().find(|d| Some(d.id) == *active && d.is_text()) {
                     *focus = Focus::Editor;

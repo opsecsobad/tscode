@@ -81,6 +81,25 @@ pub const DM_COLORS: &[(&str, &str)] = &[
     ("logo.foreground", "#23a9f2"),
     ("windowClose.hoverBackground", "#e81123"),
     ("icon.monoForeground", "#9d9d9d"),
+    ("editorSuggestWidget.background", "#202020"),
+    ("editorSuggestWidget.border", "#454545"),
+    ("editorSuggestWidget.foreground", "#cccccc"),
+    ("editorSuggestWidget.selectedBackground", "#04395e"),
+    ("editorSuggestWidget.selectedForeground", "#ffffff"),
+    ("editorSuggestWidget.highlightForeground", "#2aaaff"),
+    ("editorSuggestWidget.focusHighlightForeground", "#2aaaff"),
+    ("symbolIcon.keywordForeground", "#cccccc"),
+    ("symbolIcon.snippetForeground", "#cccccc"),
+    ("symbolIcon.textForeground", "#cccccc"),
+    ("symbolIcon.moduleForeground", "#cccccc"),
+    ("symbolIcon.constantForeground", "#cccccc"),
+    ("symbolIcon.propertyForeground", "#cccccc"),
+    ("symbolIcon.functionForeground", "#b180d7"),
+    ("symbolIcon.methodForeground", "#b180d7"),
+    ("symbolIcon.variableForeground", "#75beff"),
+    ("symbolIcon.fieldForeground", "#75beff"),
+    ("symbolIcon.enumeratorMemberForeground", "#75beff"),
+    ("symbolIcon.classForeground", "#ee9d28"),
 ];
 
 /// Dark Modern: tree-sitter capture name -> style ("bold #rrggbb").
@@ -260,6 +279,21 @@ pub const FALLBACKS: &[(&str, &str)] = &[
     ("button.secondaryBackground", "input.background"),
     ("editor.findMatchHighlightBackground", "editor.selectionBackground"),
     ("icon.monoForeground", "descriptionForeground"),
+    ("editorSuggestWidget.background", "editorWidget.background"),
+    ("editorSuggestWidget.border", "editorWidget.border"),
+    ("editorSuggestWidget.foreground", "editor.foreground"),
+    ("editorSuggestWidget.selectedBackground", "quickInputList.focusBackground"),
+    ("quickInputList.focusBackground", "list.activeSelectionBackground"),
+    ("editorSuggestWidget.selectedForeground", "list.activeSelectionForeground"),
+    ("editorSuggestWidget.highlightForeground", "list.highlightForeground"),
+    ("editorSuggestWidget.focusHighlightForeground", "editorSuggestWidget.highlightForeground"),
+    // Neutral icons follow the theme's text colour; coloured ones keep VS Code's defaults.
+    ("symbolIcon.keywordForeground", "foreground"),
+    ("symbolIcon.snippetForeground", "foreground"),
+    ("symbolIcon.textForeground", "foreground"),
+    ("symbolIcon.moduleForeground", "foreground"),
+    ("symbolIcon.constantForeground", "foreground"),
+    ("symbolIcon.propertyForeground", "foreground"),
 ];
 
 /// Keys that are painted on something other than the editor background.
@@ -271,6 +305,7 @@ pub const PAINTED_ON: &[(&str, &str)] = &[
     ("statusBarItem.hoverBackground", "statusBar.background"),
     ("commandCenter.border", "titleBar.activeBackground"),
     ("terminal.selectionBackground", "terminal.background"),
+    ("editorSuggestWidget.selectedBackground", "editorSuggestWidget.background"),
 ];
 
 /// tree-sitter capture -> TextMate scopes to try, most specific first.

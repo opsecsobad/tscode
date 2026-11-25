@@ -3,6 +3,7 @@
 //! `tscode [path]` - path is a folder (workspace) or a file to open.
 
 mod app;
+mod completion;
 mod editor;
 mod highlight;
 mod icons;

@@ -122,6 +122,17 @@ impl App {
         self.draw_splitters(&mut buf, t);
         self.draw_statusbar(&mut buf, t);
 
+        // -- the suggest widget hangs under the word being completed, over everything else
+        match self.suggest_anchor() {
+            Some(anchor) => {
+                let mouse = self.pointer();
+                if let Some(suggest) = self.suggest.as_mut() {
+                    suggest.draw(&mut buf, t, anchor, Rect::new(0, 1, w, h - 2), mouse);
+                }
+            }
+            None => self.suggest = None,
+        }
+
         // -- popups sit on top and take over the mouse and the cursor
         if !self.modals.is_empty() {
             self.hits.clear();

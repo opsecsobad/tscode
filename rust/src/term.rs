@@ -315,6 +315,7 @@ impl Term {
             KeyCode::Backspace if alt => text("\x1b\x7f"),
             KeyCode::Backspace => text("\x7f"),
             KeyCode::Esc => text("\x1b"),
+            KeyCode::Null => text("\0"),
             KeyCode::Delete if ctrl => text("\x1b[3;5~"),
             KeyCode::Delete => text("\x1b[3~"),
             KeyCode::Insert => text("\x1b[2~"),

@@ -390,6 +390,33 @@ impl Doc {
         self.edit(start, end, text);
     }
 
+    /// Accept a completion: replace the word from `start_col` to the cursor with `text`
+    /// (one undo step) and select `select` (character offsets into `text`), if given.
+    pub fn complete(&mut self, start_col: usize, text: &str, select: Option<(usize, usize)>) {
+        let start = Pos { row: self.cursor.row, col: start_col.min(self.cursor.col) };
+        let end = self.cursor;
+        self.edit(start, end, text);
+        if let Some((from, to)) = select {
+            let prefix = |n: usize| text.chars().take(n).collect::<String>();
+            self.anchor = Doc::end_of(start, &prefix(from));
+            self.cursor = Doc::end_of(start, &prefix(to));
+        }
+    }
+
+    /// Screen cell of a document position, if it is in view (as of the last paint).
+    pub fn screen_pos(&self, pos: Pos) -> Option<(i32, i32)> {
+        let left = if self.soft_wrap { 0 } else { self.left };
+        let line_len = char_len(self.lines.get(pos.row)?);
+        for (i, vrow) in self.layout(self.area.h).iter().enumerate() {
+            let last = vrow.end == line_len;
+            if vrow.row == pos.row && pos.col >= vrow.start && (pos.col < vrow.end || (last && pos.col == vrow.end)) {
+                let x = self.text_x + self.x_of(pos.row, vrow.start, pos.col) - left;
+                return Some((x.max(self.text_x), self.area.y + i as i32));
+            }
+        }
+        None
+    }
+
     fn line_range(&self, row: usize) -> (Pos, Pos) {
         let start = Pos { row, col: 0 };
         if row + 1 < self.lines.len() {
