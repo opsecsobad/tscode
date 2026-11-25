@@ -369,3 +369,10 @@ CodeEditor, Terminal, Input { pointer: text; }
 
 /* The editor scroll bar is two cells wide so it is easy to grab. */
 CodeEditor { scrollbar-size-vertical: 2; }
+
+/* ---- code completion: the suggest widget (painted in widgets/suggest.py) ---- */
+#suggest {
+    overlay: screen;
+    position: absolute;
+    background: $vs-editorSuggestWidget-background;
+}

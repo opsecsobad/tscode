@@ -9,7 +9,7 @@ the python version is slower and the rust version is so good
 # build
 if you want to build the python version
 
-`./build-python.sh`
+`./build-python.sh` 
 
 if you want to build the rust version
 
@@ -30,7 +30,7 @@ and some other info
 
 it only works with linux atm
 
-made with claude fable 5.2
+made with claude fable 5.2 and opus 5.5
 
 made in omarchy linux
 

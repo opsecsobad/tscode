@@ -25,6 +25,7 @@ from .widgets.panel import AGENTS, ClaudePanel, Panel, agent_command
 from .widgets.spotify import SpotifyPlayer
 from .widgets.sidebar import ExplorerTree, OpenFile, Sidebar, SourceControlView
 from .widgets.statusbar import StatusBar
+from .widgets.suggest import SuggestWidget
 from .widgets.terminal import Terminal
 from .widgets.titlebar import TitleBar, agent_label
 
@@ -32,7 +33,8 @@ RUNNERS = {".py": "python3", ".sh": "bash", ".bash": "bash", ".js": "node", ".mj
 
 # Keys a focused terminal needs for itself (readline, Claude Code, vim...). The
 # matching app shortcuts are switched off while a terminal has focus.
-TERMINAL_OWNED = {"save", "close_editor", "quick_open", "toggle_sidebar", "toggle_panel", "new_file"}
+TERMINAL_OWNED = {"save", "close_editor", "quick_open", "toggle_sidebar", "toggle_panel", "new_file",
+                  "trigger_suggest"}
 KEYBOARD_ACTIONS = TERMINAL_OWNED | {
     "command_palette", "show_view", "select_theme", "toggle_claude", "focus_terminal", "save_all",
     "focus_next_part", "focus_previous_part", "next_editor", "previous_editor",
@@ -64,6 +66,8 @@ class TerminalStudioCode(App):
         Binding("shift+f6", "focus_previous_part", "Focus Previous Part", priority=True),
         Binding("ctrl+pagedown", "next_editor", "Next Editor", priority=True),
         Binding("ctrl+pageup", "previous_editor", "Previous Editor", priority=True),
+        # Ctrl+Space arrives as NUL (ctrl+@) in terminals without the kitty keyboard protocol.
+        Binding("ctrl+space,ctrl+@", "trigger_suggest", "Trigger Suggest", priority=True),
     ]
 
     def __init__(self, workspace: Path, open_files: list[Path] | None = None,
@@ -99,6 +103,8 @@ class TerminalStudioCode(App):
             yield Splitter("#claude-panel", "left", 30, id="claude-splitter")
             yield ClaudePanel(self.workspace, self.vs_theme)
         yield StatusBar(self.workspace)
+        self.suggest_widget = SuggestWidget()  # code completion list (overlay)
+        yield self.suggest_widget
 
     def on_mount(self) -> None:
         # No agent starts by itself: pick one from the Agents menu in the title bar.
@@ -491,6 +497,14 @@ class TerminalStudioCode(App):
     def action_quick_open(self) -> None:
         if not CommandPalette.is_open(self):
             self.push_screen(CommandPalette(providers=[FileProvider], placeholder="Search files by name"))
+
+    def action_trigger_suggest(self) -> None:
+        """Open the code completion list at the cursor (Ctrl+Space)."""
+        editor = self.editors.active_editor
+        if editor is None or isinstance(self.focused, Terminal):
+            return
+        editor.focus()
+        editor.call_after_refresh(editor.open_suggest, True)
 
     def action_editor(self, name: str) -> None:
         """Run a TextArea action (undo, redo, cut, copy, paste, select_all...) on the active editor.

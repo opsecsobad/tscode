@@ -207,6 +207,25 @@ DARK_MODERN = VSTheme(
         "logo.foreground": "#23a9f2",
         "windowClose.hoverBackground": "#e81123",
         "icon.monoForeground": "#9d9d9d",
+        "editorSuggestWidget.background": "#202020",
+        "editorSuggestWidget.border": "#454545",
+        "editorSuggestWidget.foreground": "#cccccc",
+        "editorSuggestWidget.selectedBackground": "#04395e",
+        "editorSuggestWidget.selectedForeground": "#ffffff",
+        "editorSuggestWidget.highlightForeground": "#2aaaff",
+        "editorSuggestWidget.focusHighlightForeground": "#2aaaff",
+        "symbolIcon.keywordForeground": "#cccccc",
+        "symbolIcon.snippetForeground": "#cccccc",
+        "symbolIcon.textForeground": "#cccccc",
+        "symbolIcon.moduleForeground": "#cccccc",
+        "symbolIcon.constantForeground": "#cccccc",
+        "symbolIcon.propertyForeground": "#cccccc",
+        "symbolIcon.functionForeground": "#b180d7",
+        "symbolIcon.methodForeground": "#b180d7",
+        "symbolIcon.variableForeground": "#75beff",
+        "symbolIcon.fieldForeground": "#75beff",
+        "symbolIcon.enumeratorMemberForeground": "#75beff",
+        "symbolIcon.classForeground": "#ee9d28",
     },
     syntax={
         "comment": f"italic {_COMMENT}",
@@ -432,6 +451,21 @@ _FALLBACKS = {
     "button.secondaryBackground": "input.background",
     "editor.findMatchHighlightBackground": "editor.selectionBackground",
     "icon.monoForeground": "descriptionForeground",
+    "editorSuggestWidget.background": "editorWidget.background",
+    "editorSuggestWidget.border": "editorWidget.border",
+    "editorSuggestWidget.foreground": "editor.foreground",
+    "editorSuggestWidget.selectedBackground": "quickInputList.focusBackground",
+    "quickInputList.focusBackground": "list.activeSelectionBackground",
+    "editorSuggestWidget.selectedForeground": "list.activeSelectionForeground",
+    "editorSuggestWidget.highlightForeground": "list.highlightForeground",
+    "editorSuggestWidget.focusHighlightForeground": "editorSuggestWidget.highlightForeground",
+    # Neutral icons follow the theme's text colour; coloured ones keep VS Code's defaults.
+    "symbolIcon.keywordForeground": "foreground",
+    "symbolIcon.snippetForeground": "foreground",
+    "symbolIcon.textForeground": "foreground",
+    "symbolIcon.moduleForeground": "foreground",
+    "symbolIcon.constantForeground": "foreground",
+    "symbolIcon.propertyForeground": "foreground",
 }
 # Keys that are painted on something other than the editor background.
 _PAINTED_ON = {
@@ -442,6 +476,7 @@ _PAINTED_ON = {
     "statusBarItem.hoverBackground": "statusBar.background",
     "commandCenter.border": "titleBar.activeBackground",
     "terminal.selectionBackground": "terminal.background",
+    "editorSuggestWidget.selectedBackground": "editorSuggestWidget.background",
 }
 _ANSI_KEYS = {
     "black": "Black", "red": "Red", "green": "Green", "brown": "Yellow",
@@ -600,6 +635,11 @@ def complete_colors(given: dict[str, str], dark: bool) -> dict[str, str]:
         out["input.background"] = mix(out["sideBar.background"], foreground, 0.09)
     if too_close(out["terminal.selectionBackground"], out["terminal.background"]):
         out["terminal.selectionBackground"] = mix(out["terminal.background"], foreground, 0.22)
+    suggest = out["editorSuggestWidget.background"]
+    if too_close(out["editorSuggestWidget.selectedBackground"], suggest):
+        out["editorSuggestWidget.selectedBackground"] = mix(suggest, foreground, 0.16)
+    if out["editorSuggestWidget.border"] == suggest:
+        out["editorSuggestWidget.border"] = out["border"]
     if too_close(out["editor.findMatchHighlightBackground"], background):
         out["editor.findMatchHighlightBackground"] = mix(background, foreground, 0.28)
     # A hairline that vanishes into the background would leave the panes unseparated.

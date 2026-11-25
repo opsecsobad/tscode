@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
@@ -15,7 +16,9 @@ from textual.message import Message
 from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import ContentSwitcher, Static, TextArea
+from textual.widgets.text_area import Selection
 
+from .. import completion
 from ..icons import file_icon, icon
 from ..diagnostics import Diagnostic, check
 from ..languages import language_for, register_extra_languages
@@ -52,6 +55,11 @@ class CodeEditor(TextArea):
         self.vs_theme = theme
         self._check_timer = None
         self._check_version = 0
+        # Code completion: the open list, the word whose list was dismissed with Esc,
+        # and whether the next text change (Backspace / Delete) should re-filter it.
+        self.suggest: completion.Suggest | None = None
+        self._suggest_dismissed: tuple[int, int] | None = None
+        self._suggest_refilter = False
         self.apply_language()
 
     def on_mount(self) -> None:
@@ -128,7 +136,153 @@ class CodeEditor(TextArea):
         self._line_cache.clear()
         self.refresh()
 
+    # -- code completion (the suggest widget) --------------------------------------
+
+    @property
+    def completion_language(self) -> str | None:
+        return language_for(self.path)[0]
+
+    async def _on_key(self, event: events.Key) -> None:
+        if self.suggest is not None:
+            model = self.suggest
+            moves = {"up": -1, "down": 1, "pageup": -model.visible, "pagedown": model.visible}
+            if event.key in moves or event.key in ("enter", "tab", "escape"):
+                event.stop()
+                event.prevent_default()
+                if event.key in moves:
+                    model.step(moves[event.key])
+                    self._place_suggest()
+                elif event.key == "escape":
+                    # Stay quiet for the rest of this word, like VS Code.
+                    self._suggest_dismissed = (model.row, model.start)
+                    self.close_suggest()
+                else:
+                    self.accept_suggest()
+                return
+        if event.is_printable and event.character and not self.read_only:
+            await super()._on_key(event)
+            self._suggest_typed(event.character)
+            return
+        if event.key in ("backspace", "delete"):
+            self._suggest_refilter = self.suggest is not None
+        else:
+            self.close_suggest()
+        await super()._on_key(event)
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if self._suggest_refilter:
+            self._suggest_refilter = False
+            self._refilter_suggest()
+
+    def on_blur(self, event: events.Blur) -> None:
+        self.close_suggest()
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        self.close_suggest()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        self.close_suggest()
+
+    def _suggest_typed(self, character: str) -> None:
+        """A character was typed: narrow, open or close the list."""
+        language = self.completion_language
+        row, col = self.cursor_location
+        before = self.document.get_line(row)[:col]
+        if completion.is_word(character, completion.word_extra(language)):
+            if self.suggest is not None:
+                self._refilter_suggest()
+            else:
+                self.open_suggest()
+        elif completion.is_trigger(language, before):
+            self.open_suggest()
+        else:
+            self.close_suggest()
+
+    def open_suggest(self, manual: bool = False) -> None:
+        """Open the list at the cursor. `manual` = Ctrl+Space: no quiet zones, empty word allowed."""
+        self.close_suggest()
+        if self.selection.start != self.selection.end:
+            return
+        row, col = self.cursor_location
+        line = self.document.get_line(row)
+        language = self.completion_language
+        start = completion.word_start(line, col, completion.word_extra(language))
+        typed, before = line[start:col], line[:start]
+        triggered = not typed and completion.is_trigger(language, before)
+        if not manual:
+            wordish = any(c.isalpha() for c in typed) or (typed != "" and all(c in "$@#" for c in typed))
+            if (not completion.auto_suggest(language)
+                    or completion.quiet_at(language, line, start, self._highlights.get(row, []))
+                    or typed[:1].isdigit()
+                    or not (triggered or wordish)
+                    or self._suggest_dismissed == (row, start)):
+                return
+        others = [
+            doc.document.lines for doc in (self.parent.children if self.parent else [])
+            if isinstance(doc, CodeEditor) and doc is not self and doc.completion_language == language
+        ]
+        items = completion.candidates(completion.Context(language, self.document.lines, row, start, others))
+        model = completion.Suggest(row, start, manual or triggered, items, completion.ignore_case(language))
+        if model.filter(typed):
+            self.suggest = model
+            self._place_suggest()
+
+    def _refilter_suggest(self) -> None:
+        """The word under the cursor changed: filter again, or close when it no longer applies."""
+        model = self.suggest
+        if model is None:
+            return
+        row, col = self.cursor_location
+        typed = self.document.get_line(row)[model.start:col]
+        extra = completion.word_extra(self.completion_language)
+        still_here = (row == model.row and col >= model.start and self.selection.start == self.selection.end
+                      and all(completion.is_word(c, extra) for c in typed) and (model.explicit or typed))
+        if still_here and model.filter(typed):
+            self._place_suggest()
+        else:
+            self.close_suggest()
+
+    def accept_suggest(self) -> None:
+        """Insert the highlighted suggestion (one undo step)."""
+        model, self.suggest = self.suggest, None
+        self.close_suggest()
+        item = model.current if model else None
+        row, col = self.cursor_location
+        if item is None or row != model.row or col < model.start:
+            return
+        line = self.document.get_line(row)
+        indent = line[:len(line) - len(line.lstrip(" \t"))]
+        text, select = completion.insert_text(
+            item, line[model.start:col], indent, completion.ignore_case(self.completion_language))
+        self.replace(text, (row, model.start), (row, col), maintain_selection_offset=False)
+        if select is not None:
+            def location(n: int) -> tuple[int, int]:
+                lines = text[:n].split("\n")
+                return (row + len(lines) - 1, (model.start if len(lines) == 1 else 0) + len(lines[-1]))
+            self.selection = Selection(location(select[0]), location(select[1]))
+
+    def close_suggest(self) -> None:
+        self.suggest = None
+        widget = getattr(self.app, "suggest_widget", None)
+        if widget is not None and widget.editor is self:
+            widget.hide()
+
+    def _place_suggest(self) -> None:
+        """Show the list under the start of the word (after the cursor has moved on screen)."""
+        def place() -> None:
+            widget = getattr(self.app, "suggest_widget", None)
+            model = self.suggest
+            if widget is None or model is None or not self.has_focus:
+                return
+            row, col = self.cursor_location
+            offset = self.cursor_screen_offset
+            typed = self.document.get_line(row)[model.start:col]
+            widget.show(self, model, (offset.x - cell_len(typed), offset.y))
+
+        self.call_after_refresh(place)
+
     def on_mouse_down(self, event: events.MouseDown) -> None:
+        self.close_suggest()
         if event.button == 3:
             event.prevent_default()  # a right-click keeps the selection; it opens the menu
 
@@ -400,6 +554,9 @@ class EditorArea(Vertical):
         self.activate(doc.id, line)
 
     def activate(self, doc_id: str, line: int | None = None) -> None:
+        for doc in self.docs:
+            if isinstance(doc, CodeEditor):
+                doc.close_suggest()
         self.switcher.current = doc_id
         doc = self.active
         if isinstance(doc, CodeEditor):

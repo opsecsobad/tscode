@@ -23,6 +23,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("File: Save All", "save_all"),
     ("View: Close Editor", "close_editor"),
     ("Go to File...", "quick_open"),
+    ("Trigger Suggest", "trigger_suggest"),
     ("View: Show Explorer", "show_view('explorer')"),
     ("View: Show Search", "show_view('search')"),
     ("View: Show Source Control", "show_view('scm')"),
